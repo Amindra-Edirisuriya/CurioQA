@@ -1,0 +1,53 @@
+TAP version 13
+# Subtest: scoreRun
+    # Subtest: perfect run earns 10 XP per answer plus a 10 XP bonus
+    ok 1 - perfect run earns 10 XP per answer plus a 10 XP bonus
+      ---
+      duration_ms: 1.064907
+      type: 'test'
+      ...
+    # Subtest: partial run: no bonus, accuracy rounded to a whole percent
+    ok 2 - partial run: no bonus, accuracy rounded to a whole percent
+      ---
+      duration_ms: 0.112883
+      type: 'test'
+      ...
+    # Subtest: zero correct earns nothing
+    ok 3 - zero correct earns nothing
+      ---
+      duration_ms: 1.128165
+      type: 'test'
+      ...
+    # Subtest: correctCount above the total is capped
+    ok 4 - correctCount above the total is capped
+      ---
+      duration_ms: 0.123134
+      type: 'test'
+      ...
+    # Subtest: negative correctCount is treated as 0
+    ok 5 - negative correctCount is treated as 0
+      ---
+      duration_ms: 0.120072
+      type: 'test'
+      ...
+    # Subtest: a lesson with no questions never produces NaN and is not 'perfect'
+    ok 6 - a lesson with no questions never produces NaN and is not 'perfect'
+      ---
+      duration_ms: 0.131137
+      type: 'test'
+      ...
+    1..6
+ok 1 - scoreRun
+  ---
+  duration_ms: 3.462593
+  type: 'suite'
+  ...
+1..1
+# tests 6
+# suites 1
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 64.375099
