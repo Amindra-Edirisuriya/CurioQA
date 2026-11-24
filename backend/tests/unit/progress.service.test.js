@@ -11,7 +11,7 @@ const lessonDoc = (slug, { published = true } = {}) => ({
   _id: oid(`id-${slug}`), slug, title: slug, xp: 20, difficulty: "beginner", estimatedMinutes: 5, published,
 });
 
-describe("buildPath (CC = 4)", () => {
+describe("buildPath", () => {
   const lessons = [lessonDoc("a"), lessonDoc("b"), lessonDoc("c"), lessonDoc("draft", { published: false })];
 
   test("new learner: first lesson active, the rest locked, draft flagged", () => {

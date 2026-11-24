@@ -1,0 +1,118 @@
+
+> curio-backend@1.0.0 test:coverage
+> node --test --experimental-test-module-mocks --experimental-test-coverage --test-coverage-include=src/services/** --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info tests/unit/*.test.js
+
+(node:956) ExperimentalWarning: Module mocking is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+▶ weekBounds
+  ✔ a Wednesday belongs to the week starting the Monday before (0.950985ms)
+  ✔ a Sunday still belongs to the previous Monday's week (0.173123ms)
+  ✔ Monday 00:00 UTC starts a new week (0.107986ms)
+✔ weekBounds (3.815161ms)
+▶ zonesFor (CC = 3)
+  ✔ path 1: middle tier, full cohort -> promote 7, demote 5 (0.849449ms)
+  ✔ path 2: top tier never promotes (0.131634ms)
+  ✔ path 3: bottom tier never demotes (0.072227ms)
+  ✔ boundary: cohort of 12 (= 7 + 5) skips demotion, 13 does not (0.064101ms)
+✔ zonesFor (CC = 3) (1.247463ms)
+▶ leagueView
+  ✔ clamps an out-of-range tier and shows 0 points when not joined (0.21984ms)
+  ✔ defaults to Bronze when the user has no league yet (0.081901ms)
+  ✔ shows weekly XP when joined this week (0.071349ms)
+✔ leagueView (0.524497ms)
+▶ settleLeague
+  ✔ does nothing when the user never joined a week (0.989653ms)
+  ✔ does nothing while the current week is still running (0.227618ms)
+  ✔ top-7 finisher with XP is promoted (7.060306ms)
+  ✔ bottom-5 finisher in a large cohort is demoted (0.374268ms)
+  ✔ a middle finisher stays in the same tier (0.278551ms)
+  ✔ rank 1 with 0 XP is NOT promoted (weeklyXp > 0 condition) (0.22618ms)
+  ✔ ties are broken by id so ranking is deterministic (0.21002ms)
+  ✔ uses a peer's lastWeek snapshot if that peer already settled (0.157662ms)
+✔ settleLeague (9.789993ms)
+▶ settleLeague: learner missing from the peer list
+  ✔ falls back to last place (0.111901ms)
+✔ settleLeague: learner missing from the peer list (0.162342ms)
+▶ joinLeague
+  ✔ assigns a cohort of 30 based on how many already joined (1.252126ms)
+  ✔ does not reset weekly XP if already joined this week (0.198386ms)
+✔ joinLeague (1.554542ms)
+▶ standingsFor
+  ✔ joined: ranks the cohort, marks the learner and shows an unseen result (0.648959ms)
+  ✔ not joined: empty table, and an already-seen result is hidden (0.136149ms)
+✔ standingsFor (0.880866ms)
+(node:964) ExperimentalWarning: Module mocking is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:964) ExperimentalWarning: The MockTimers API is an experimental feature and might change at any time
+▶ buildPath
+  ✔ new learner: first lesson active, the rest locked, draft flagged (4.099315ms)
+  ✔ completed lessons show completed and unlock the next one (0.215166ms)
+  ✔ all published lessons completed: no active node (0.12512ms)
+  ✔ missing summary and questionCount default safely (0.156725ms)
+✔ buildPath (5.875677ms)
+▶ recordCompletion
+  ✔ perfect first run: XP bonus, gems, badges, no hearts lost (2.855572ms)
+  ✔ partial run: hearts lost, refill timer started, no perfect bonus (0.742263ms)
+  ✔ zero correct: no XP, so the learner does not join the league (0.550951ms)
+  ✔ hearts never go below zero (0.323107ms)
+  ✔ correctCount larger than the question count is capped (0.345289ms)
+  ✔ replaying a lesson updates best scores and does not count it twice (0.32841ms)
+  ✔ a slower replay keeps the old best time (0.473865ms)
+  ✔ replay with no earlier best time records the new time (0.47006ms)
+  ✔ replay with a missing time keeps the old best time (1.535504ms)
+  ▶ streak
+    ✔ activity yesterday continues the streak (0.460972ms)
+    ✔ a second lesson on the same day does not add to the streak (0.373192ms)
+    ✔ a gap of several days resets the streak to 1 and keeps the longest (0.238303ms)
+    ✔ first ever activity starts the streak at 1 (0.473873ms)
+    ✖ a skipped calendar day resets the streak (1.502845ms) # DEF-M2-01: updateStreak uses 24 h blocks instead of calendar days
+  ✔ streak (3.403582ms)
+✔ recordCompletion (11.593757ms)
+▶ scoreRun
+  ✔ perfect run earns 10 XP per answer plus a 10 XP bonus (1.355243ms)
+  ✔ partial run: no bonus, accuracy rounded to a whole percent (0.175677ms)
+  ✔ zero correct earns nothing (0.128651ms)
+  ✔ correctCount above the total is capped (0.077635ms)
+  ✔ negative correctCount is treated as 0 (0.073363ms)
+  ✔ a lesson with no questions never produces NaN and is not 'perfect' (0.183583ms)
+✔ scoreRun (4.376494ms)
+ℹ tests 47
+ℹ suites 11
+ℹ pass 46
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 1
+ℹ duration_ms 424.895685
+ℹ start of coverage report
+ℹ ----------------------------------------------------------------------
+ℹ file                  | line % | branch % | funcs % | uncovered lines
+ℹ ----------------------------------------------------------------------
+ℹ src                   |        |          |         | 
+ℹ  services             |        |          |         | 
+ℹ   league.service.js   | 100.00 |   100.00 |  100.00 | 
+ℹ   progress.service.js | 100.00 |   100.00 |  100.00 | 
+ℹ   scoring.js          | 100.00 |   100.00 |  100.00 | 
+ℹ ----------------------------------------------------------------------
+ℹ all files             | 100.00 |   100.00 |  100.00 | 
+ℹ ----------------------------------------------------------------------
+ℹ end of coverage report
+
+✖ failing tests:
+
+test at tests/unit/progress.service.test.js:155:5
+✖ a skipped calendar day resets the streak (1.502845ms) # DEF-M2-01: updateStreak uses 24 h blocks instead of calendar days
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  4 !== 1
+  
+      at TestContext.<anonymous> (file:///home/claude/hasindu44/curio/backend/tests/unit/progress.service.test.js:159:14)
+      at async Test.run (node:internal/test_runner/test:1054:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 4,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

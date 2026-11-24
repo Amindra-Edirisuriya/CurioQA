@@ -1,0 +1,69 @@
+
+> curio-frontend@1.0.0 test:coverage
+> node --test --experimental-test-coverage --test-coverage-include=src/lib/** --test-coverage-exclude=src/lib/sound.js --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info tests/unit/*.test.js
+
+▶ timeLeft (CC = 6)
+  ✔ plural days (1.276843ms)
+  ✔ singular day (boundary: exactly 24 h) (0.149097ms)
+  ✔ plural hours (just under a day) (0.143546ms)
+  ✔ singular hour (0.085287ms)
+  ✔ plural minutes (0.069252ms)
+  ✔ under a minute still shows 1 minute (0.067802ms)
+  ✔ a past deadline is clamped to 1 minute, never negative (0.062636ms)
+✔ timeLeft (CC = 6) (2.981457ms)
+▶ weekBounds (frontend copy)
+  ✔ matches the backend: weeks start Monday 00:00 UTC (0.14732ms)
+✔ weekBounds (frontend copy) (0.211702ms)
+▶ validateSignup (CC = 5)
+  ✔ path 1: all fields valid -> no errors (1.445005ms)
+  ✔ path 2: name shorter than 2 characters (after trimming) (0.204056ms)
+  ✔ path 3: invalid email (0.112122ms)
+  ✔ path 4: password shorter than 8 (0.109869ms)
+  ✔ path 5: long password with no number (0.074541ms)
+  ✔ path 5b: long password with no letter (0.066565ms)
+  ✔ BVA: password of exactly 7 / 8 characters (0.148897ms)
+  ✔ several invalid fields are all reported together (0.199692ms)
+✔ validateSignup (CC = 5) (3.505718ms)
+▶ validateLogin
+  ✔ valid credentials (0.116342ms)
+  ✔ empty password and bad email (0.076301ms)
+✔ validateLogin (0.274402ms)
+▶ slugify
+  ✔ lowercases, strips accents and joins words with dashes (1.245585ms)
+  ✔ handles empty / null input (0.136812ms)
+  ✔ is capped at 60 characters (0.130627ms)
+✔ slugify (1.669963ms)
+▶ validateLesson
+  ✔ a valid draft has no errors (0.398471ms)
+  ✔ title shorter than 3 and longer than 80 (0.238466ms)
+  ✔ bad slug, long summary and missing course (0.085077ms)
+  ✔ BVA on XP: 4 and 101 rejected, 5 and 100 accepted, decimals and empty rejected (0.116009ms)
+  ✔ order and minutes out of range (0.069024ms)
+  ✔ publishing without questions is rejected (0.059151ms)
+  ✔ mcq: empty prompt, empty option and correctIndex out of range (0.173335ms)
+  ✔ mcq: missing correctIndex (0.071844ms)
+  ✔ numeric: empty or non-number answer rejected, 0 accepted (0.099249ms)
+  ✔ interactive and lab questions only need a prompt (0.078839ms)
+  ✔ order: fewer than 2 steps rejected, error key uses the question index (0.093569ms)
+  ✔ order: two filled steps are accepted (0.122133ms)
+✔ validateLesson (1.892276ms)
+ℹ tests 33
+ℹ suites 6
+ℹ pass 33
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 166.454687
+ℹ start of coverage report
+ℹ ----------------------------------------------------------------
+ℹ file            | line % | branch % | funcs % | uncovered lines
+ℹ ----------------------------------------------------------------
+ℹ src             |        |          |         | 
+ℹ  lib            |        |          |         | 
+ℹ   leagues.js    | 100.00 |   100.00 |  100.00 | 
+ℹ   validation.js | 100.00 |   100.00 |  100.00 | 
+ℹ ----------------------------------------------------------------
+ℹ all files       | 100.00 |   100.00 |  100.00 | 
+ℹ ----------------------------------------------------------------
+ℹ end of coverage report
