@@ -34,8 +34,12 @@ Then(/^the learner loses (\d+) hearts$/, function (hearts) {
   assert.equal(this.score.wrong, Number(hearts));
 });
 
-Then(/^the run is( not)? marked as perfect$/, function (not) {
-  assert.equal(this.score.perfect, !not);
+Then("the run is marked as perfect", function () {
+  assert.equal(this.score.perfect, true);
+});
+
+Then("the run is not marked as perfect", function () {
+  assert.equal(this.score.perfect, false);
 });
 
 // ---- Learning path -------------------------------------------------------
