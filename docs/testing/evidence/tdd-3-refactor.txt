@@ -1,0 +1,394 @@
+
+> curio-backend@1.0.0 test:unit
+> node --test --experimental-test-module-mocks tests/unit/*.test.js
+
+TAP version 13
+# (node:813) ExperimentalWarning: Module mocking is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: weekBounds
+    # Subtest: a Wednesday belongs to the week starting the Monday before
+    ok 1 - a Wednesday belongs to the week starting the Monday before
+      ---
+      duration_ms: 0.864912
+      type: 'test'
+      ...
+    # Subtest: a Sunday still belongs to the previous Monday's week
+    ok 2 - a Sunday still belongs to the previous Monday's week
+      ---
+      duration_ms: 0.114704
+      type: 'test'
+      ...
+    # Subtest: Monday 00:00 UTC starts a new week
+    ok 3 - Monday 00:00 UTC starts a new week
+      ---
+      duration_ms: 0.071717
+      type: 'test'
+      ...
+    1..3
+ok 1 - weekBounds
+  ---
+  duration_ms: 1.755156
+  type: 'suite'
+  ...
+# Subtest: zonesFor (CC = 3)
+    # Subtest: path 1: middle tier, full cohort -> promote 7, demote 5
+    ok 1 - path 1: middle tier, full cohort -> promote 7, demote 5
+      ---
+      duration_ms: 0.634118
+      type: 'test'
+      ...
+    # Subtest: path 2: top tier never promotes
+    ok 2 - path 2: top tier never promotes
+      ---
+      duration_ms: 0.085594
+      type: 'test'
+      ...
+    # Subtest: path 3: bottom tier never demotes
+    ok 3 - path 3: bottom tier never demotes
+      ---
+      duration_ms: 0.212426
+      type: 'test'
+      ...
+    # Subtest: boundary: cohort of 12 (= 7 + 5) skips demotion, 13 does not
+    ok 4 - boundary: cohort of 12 (= 7 + 5) skips demotion, 13 does not
+      ---
+      duration_ms: 0.128282
+      type: 'test'
+      ...
+    1..4
+ok 2 - zonesFor (CC = 3)
+  ---
+  duration_ms: 2.620363
+  type: 'suite'
+  ...
+# Subtest: leagueView
+    # Subtest: clamps an out-of-range tier and shows 0 points when not joined
+    ok 1 - clamps an out-of-range tier and shows 0 points when not joined
+      ---
+      duration_ms: 0.268924
+      type: 'test'
+      ...
+    # Subtest: defaults to Bronze when the user has no league yet
+    ok 2 - defaults to Bronze when the user has no league yet
+      ---
+      duration_ms: 0.119402
+      type: 'test'
+      ...
+    # Subtest: shows weekly XP when joined this week
+    ok 3 - shows weekly XP when joined this week
+      ---
+      duration_ms: 0.171149
+      type: 'test'
+      ...
+    1..3
+ok 3 - leagueView
+  ---
+  duration_ms: 0.706454
+  type: 'suite'
+  ...
+# Subtest: settleLeague
+    # Subtest: does nothing when the user never joined a week
+    ok 1 - does nothing when the user never joined a week
+      ---
+      duration_ms: 0.315744
+      type: 'test'
+      ...
+    # Subtest: does nothing while the current week is still running
+    ok 2 - does nothing while the current week is still running
+      ---
+      duration_ms: 0.142902
+      type: 'test'
+      ...
+    # Subtest: top-7 finisher with XP is promoted
+    ok 3 - top-7 finisher with XP is promoted
+      ---
+      duration_ms: 6.603787
+      type: 'test'
+      ...
+    # Subtest: bottom-5 finisher in a large cohort is demoted
+    ok 4 - bottom-5 finisher in a large cohort is demoted
+      ---
+      duration_ms: 0.248145
+      type: 'test'
+      ...
+    # Subtest: a middle finisher stays in the same tier
+    ok 5 - a middle finisher stays in the same tier
+      ---
+      duration_ms: 0.256511
+      type: 'test'
+      ...
+    # Subtest: rank 1 with 0 XP is NOT promoted (weeklyXp > 0 condition)
+    ok 6 - rank 1 with 0 XP is NOT promoted (weeklyXp > 0 condition)
+      ---
+      duration_ms: 0.205744
+      type: 'test'
+      ...
+    # Subtest: ties are broken by id so ranking is deterministic
+    ok 7 - ties are broken by id so ranking is deterministic
+      ---
+      duration_ms: 0.142395
+      type: 'test'
+      ...
+    # Subtest: uses a peer's lastWeek snapshot if that peer already settled
+    ok 8 - uses a peer's lastWeek snapshot if that peer already settled
+      ---
+      duration_ms: 0.112678
+      type: 'test'
+      ...
+    1..8
+ok 4 - settleLeague
+  ---
+  duration_ms: 8.198054
+  type: 'suite'
+  ...
+# Subtest: settleLeague: learner missing from the peer list
+    # Subtest: falls back to last place
+    ok 1 - falls back to last place
+      ---
+      duration_ms: 0.100701
+      type: 'test'
+      ...
+    1..1
+ok 5 - settleLeague: learner missing from the peer list
+  ---
+  duration_ms: 0.138596
+  type: 'suite'
+  ...
+# Subtest: joinLeague
+    # Subtest: assigns a cohort of 30 based on how many already joined
+    ok 1 - assigns a cohort of 30 based on how many already joined
+      ---
+      duration_ms: 0.132436
+      type: 'test'
+      ...
+    # Subtest: does not reset weekly XP if already joined this week
+    ok 2 - does not reset weekly XP if already joined this week
+      ---
+      duration_ms: 0.101635
+      type: 'test'
+      ...
+    1..2
+ok 6 - joinLeague
+  ---
+  duration_ms: 0.280222
+  type: 'suite'
+  ...
+# Subtest: standingsFor
+    # Subtest: joined: ranks the cohort, marks the learner and shows an unseen result
+    ok 1 - joined: ranks the cohort, marks the learner and shows an unseen result
+      ---
+      duration_ms: 0.281556
+      type: 'test'
+      ...
+    # Subtest: not joined: empty table, and an already-seen result is hidden
+    ok 2 - not joined: empty table, and an already-seen result is hidden
+      ---
+      duration_ms: 0.078342
+      type: 'test'
+      ...
+    1..2
+ok 7 - standingsFor
+  ---
+  duration_ms: 0.415456
+  type: 'suite'
+  ...
+# (node:821) ExperimentalWarning: Module mocking is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:821) ExperimentalWarning: The MockTimers API is an experimental feature and might change at any time
+# Subtest: buildPath (CC = 4)
+    # Subtest: new learner: first lesson active, the rest locked, draft flagged
+    ok 1 - new learner: first lesson active, the rest locked, draft flagged
+      ---
+      duration_ms: 1.049788
+      type: 'test'
+      ...
+    # Subtest: completed lessons show completed and unlock the next one
+    ok 2 - completed lessons show completed and unlock the next one
+      ---
+      duration_ms: 0.269167
+      type: 'test'
+      ...
+    # Subtest: all published lessons completed: no active node
+    ok 3 - all published lessons completed: no active node
+      ---
+      duration_ms: 0.120445
+      type: 'test'
+      ...
+    # Subtest: missing summary and questionCount default safely
+    ok 4 - missing summary and questionCount default safely
+      ---
+      duration_ms: 0.206546
+      type: 'test'
+      ...
+    1..4
+ok 8 - buildPath (CC = 4)
+  ---
+  duration_ms: 2.472764
+  type: 'suite'
+  ...
+# Subtest: recordCompletion
+    # Subtest: perfect first run: XP bonus, gems, badges, no hearts lost
+    ok 1 - perfect first run: XP bonus, gems, badges, no hearts lost
+      ---
+      duration_ms: 3.139612
+      type: 'test'
+      ...
+    # Subtest: partial run: hearts lost, refill timer started, no perfect bonus
+    ok 2 - partial run: hearts lost, refill timer started, no perfect bonus
+      ---
+      duration_ms: 0.491613
+      type: 'test'
+      ...
+    # Subtest: zero correct: no XP, so the learner does not join the league
+    ok 3 - zero correct: no XP, so the learner does not join the league
+      ---
+      duration_ms: 0.40003
+      type: 'test'
+      ...
+    # Subtest: hearts never go below zero
+    ok 4 - hearts never go below zero
+      ---
+      duration_ms: 0.279083
+      type: 'test'
+      ...
+    # Subtest: correctCount larger than the question count is capped
+    ok 5 - correctCount larger than the question count is capped
+      ---
+      duration_ms: 0.313061
+      type: 'test'
+      ...
+    # Subtest: replaying a lesson updates best scores and does not count it twice
+    ok 6 - replaying a lesson updates best scores and does not count it twice
+      ---
+      duration_ms: 0.307124
+      type: 'test'
+      ...
+    # Subtest: a slower replay keeps the old best time
+    ok 7 - a slower replay keeps the old best time
+      ---
+      duration_ms: 0.204152
+      type: 'test'
+      ...
+    # Subtest: replay with no earlier best time records the new time
+    ok 8 - replay with no earlier best time records the new time
+      ---
+      duration_ms: 0.16415
+      type: 'test'
+      ...
+    # Subtest: replay with a missing time keeps the old best time
+    ok 9 - replay with a missing time keeps the old best time
+      ---
+      duration_ms: 0.379389
+      type: 'test'
+      ...
+    # Subtest: streak
+        # Subtest: activity yesterday continues the streak
+        ok 1 - activity yesterday continues the streak
+          ---
+          duration_ms: 0.303176
+          type: 'test'
+          ...
+        # Subtest: a second lesson on the same day does not add to the streak
+        ok 2 - a second lesson on the same day does not add to the streak
+          ---
+          duration_ms: 1.11683
+          type: 'test'
+          ...
+        # Subtest: a gap of several days resets the streak to 1 and keeps the longest
+        ok 3 - a gap of several days resets the streak to 1 and keeps the longest
+          ---
+          duration_ms: 0.254664
+          type: 'test'
+          ...
+        # Subtest: first ever activity starts the streak at 1
+        ok 4 - first ever activity starts the streak at 1
+          ---
+          duration_ms: 0.259196
+          type: 'test'
+          ...
+        # Subtest: a skipped calendar day resets the streak
+        not ok 5 - a skipped calendar day resets the streak # TODO DEF-M2-01: updateStreak uses 24 h blocks instead of calendar days
+          ---
+          duration_ms: 1.145678
+          type: 'test'
+          location: '/home/claude/hasindu44/curio/backend/tests/unit/progress.service.test.js:155:5'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            
+            4 !== 1
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 1
+          actual: 4
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/claude/hasindu44/curio/backend/tests/unit/progress.service.test.js:159:14)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+          ...
+        1..5
+    ok 10 - streak
+      ---
+      duration_ms: 3.27022
+      type: 'suite'
+      ...
+    1..10
+ok 9 - recordCompletion
+  ---
+  duration_ms: 9.304703
+  type: 'suite'
+  ...
+# Subtest: scoreRun
+    # Subtest: perfect run earns 10 XP per answer plus a 10 XP bonus
+    ok 1 - perfect run earns 10 XP per answer plus a 10 XP bonus
+      ---
+      duration_ms: 1.044049
+      type: 'test'
+      ...
+    # Subtest: partial run: no bonus, accuracy rounded to a whole percent
+    ok 2 - partial run: no bonus, accuracy rounded to a whole percent
+      ---
+      duration_ms: 0.124989
+      type: 'test'
+      ...
+    # Subtest: zero correct earns nothing
+    ok 3 - zero correct earns nothing
+      ---
+      duration_ms: 1.272698
+      type: 'test'
+      ...
+    # Subtest: correctCount above the total is capped
+    ok 4 - correctCount above the total is capped
+      ---
+      duration_ms: 0.143429
+      type: 'test'
+      ...
+    # Subtest: negative correctCount is treated as 0
+    ok 5 - negative correctCount is treated as 0
+      ---
+      duration_ms: 0.085087
+      type: 'test'
+      ...
+    # Subtest: a lesson with no questions never produces NaN and is not 'perfect'
+    ok 6 - a lesson with no questions never produces NaN and is not 'perfect'
+      ---
+      duration_ms: 0.210075
+      type: 'test'
+      ...
+    1..6
+ok 10 - scoreRun
+  ---
+  duration_ms: 3.730041
+  type: 'suite'
+  ...
+1..10
+# tests 47
+# suites 11
+# pass 46
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 1
+# duration_ms 297.753827

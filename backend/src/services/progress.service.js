@@ -1,5 +1,6 @@
 import Attempt from "../models/Attempt.js";
 import { joinLeague, settleLeague } from "./league.service.js";
+import { scoreRun } from "./scoring.js";
 
 const HEART_REFILL_MS = 5 * 60 * 1000;
 const DAY_MS = 86400000;
@@ -43,10 +44,7 @@ function awardBadges(user, { firstCompletion, perfect }) {
 export async function recordCompletion(user, lesson, { correctCount, timeSeconds }) {
   const now = new Date();
   const total = lesson.questions.length;
-  const correct = Math.min(total, correctCount);
-  const perfect = correct === total;
-  const accuracy = Math.round((correct / total) * 100);
-  const xpAwarded = correct * 10 + (perfect ? 10 : 0);
+  const { correct, wrong, perfect, accuracy, xpAwarded } = scoreRun({ total, correctCount });
 
   const progress = user.lessonProgress.find((item) => item.lesson.equals(lesson._id));
   const firstCompletion = progress?.status !== "completed";
@@ -68,7 +66,6 @@ export async function recordCompletion(user, lesson, { correctCount, timeSeconds
   }
   if (perfect) user.gems += 5;
 
-  const wrong = total - correct;
   user.hearts.current = Math.max(0, user.hearts.current - wrong);
   if (wrong > 0 && !user.hearts.nextRefillAt) user.hearts.nextRefillAt = new Date(now.getTime() + HEART_REFILL_MS);
 
