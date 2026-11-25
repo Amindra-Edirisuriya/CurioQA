@@ -1,2 +1,0 @@
-timeStamp,elapsed,label,responseCode,responseMessage,threadName,dataType,success,failureMessage,bytes,sentBytes,grpThreads,allThreads,URL,Latency,IdleTime,Connect
-1795624308405,30012,Curio Courses API Test,401,Unauthorized,Curio Load Test 1-1,text,false,,1039,357,1,1,http://localhost:4000/api/studio/courses,30012,0,1
