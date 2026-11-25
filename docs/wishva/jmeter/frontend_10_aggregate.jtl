@@ -1,0 +1,11 @@
+timeStamp,elapsed,label,responseCode,responseMessage,threadName,dataType,success,failureMessage,bytes,sentBytes,grpThreads,allThreads,URL,Latency,IdleTime,Connect
+1795617905687,115,Curio Homepage Test,200,OK,Curio Load Test 1-1,text,true,,1087,116,1,1,http://localhost:5173/,105,0,57
+1795617906094,11,Curio Homepage Test,200,OK,Curio Load Test 1-2,text,true,,1087,116,1,1,http://localhost:5173/,11,0,1
+1795617906596,12,Curio Homepage Test,200,OK,Curio Load Test 1-3,text,true,,1087,116,1,1,http://localhost:5173/,12,0,3
+1795617907092,12,Curio Homepage Test,200,OK,Curio Load Test 1-4,text,true,,1087,116,1,1,http://localhost:5173/,12,0,2
+1795617907592,16,Curio Homepage Test,200,OK,Curio Load Test 1-5,text,true,,1087,116,1,1,http://localhost:5173/,16,0,3
+1795617908093,14,Curio Homepage Test,200,OK,Curio Load Test 1-6,text,true,,1087,116,1,1,http://localhost:5173/,14,0,2
+1795617908594,11,Curio Homepage Test,200,OK,Curio Load Test 1-7,text,true,,1087,116,1,1,http://localhost:5173/,11,0,2
+1795617909092,12,Curio Homepage Test,200,OK,Curio Load Test 1-8,text,true,,1087,116,1,1,http://localhost:5173/,12,0,2
+1795617909592,9,Curio Homepage Test,200,OK,Curio Load Test 1-9,text,true,,1087,116,1,1,http://localhost:5173/,9,0,2
+1795617910093,9,Curio Homepage Test,200,OK,Curio Load Test 1-10,text,true,,1087,116,1,1,http://localhost:5173/,9,0,1
