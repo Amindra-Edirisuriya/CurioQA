@@ -1,0 +1,1864 @@
+From 522456b95060faf976696ae677d59644dba3aa80 Mon Sep 17 00:00:00 2001
+From: Curio Member 2 <member2@curio.local>
+Date: Tue, 24 Nov 2026 15:36:25 +0530
+Subject: [PATCH 1/6] test: add unit tests for progress, league and validation
+ logic
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011AYoWv6wE9SScZMABpyZBG
+---
+ .gitignore                                  |   2 +
+ backend/package.json                        |   4 +-
+ backend/tests/unit/helpers.js               |  64 +++++++
+ backend/tests/unit/league.service.test.js   | 182 ++++++++++++++++++++
+ backend/tests/unit/progress.service.test.js | 162 +++++++++++++++++
+ frontend/package.json                       |   4 +-
+ frontend/tests/unit/leagues.test.js         |  26 +++
+ frontend/tests/unit/validation.test.js      | 140 +++++++++++++++
+ 8 files changed, 582 insertions(+), 2 deletions(-)
+ create mode 100644 backend/tests/unit/helpers.js
+ create mode 100644 backend/tests/unit/league.service.test.js
+ create mode 100644 backend/tests/unit/progress.service.test.js
+ create mode 100644 frontend/tests/unit/leagues.test.js
+ create mode 100644 frontend/tests/unit/validation.test.js
+
+diff --git a/.gitignore b/.gitignore
+index d53638b..43dc582 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -6,3 +6,5 @@ dist/
+ npm-debug.log*
+ test-results/
+ playwright-report/
++
++coverage/
+diff --git a/backend/package.json b/backend/package.json
+index 9d65e28..1e14edf 100644
+--- a/backend/package.json
++++ b/backend/package.json
+@@ -10,7 +10,9 @@
+     "start": "node src/server.js",
+     "seed": "node src/seed/seed.js",
+     "seed:reset": "node src/seed/seed.js --reset",
+-    "test": "node --test tests/*.test.js"
++    "test": "node --test tests/*.test.js",
++    "test:unit": "node --test --experimental-test-module-mocks tests/unit/*.test.js",
++    "test:coverage": "node --test --experimental-test-module-mocks --experimental-test-coverage --test-coverage-include=src/services/** --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info tests/unit/*.test.js"
+   },
+   "dependencies": {
+     "bcryptjs": "^3.0.3",
+diff --git a/backend/tests/unit/helpers.js b/backend/tests/unit/helpers.js
+new file mode 100644
+index 0000000..9d0ea1d
+--- /dev/null
++++ b/backend/tests/unit/helpers.js
+@@ -0,0 +1,64 @@
++// Shared test doubles for the unit tests. The Mongoose models are replaced
++// with in-memory fakes so the services can be tested without a database.
++import { mock } from "node:test";
++
++export const fakeUserModel = {
++  peers: [],
++  cohortCount: 0,
++  find() {
++    const rows = async () => fakeUserModel.peers;
++    return { select: rows, sort: () => ({ limit: rows }) };
++  },
++  async countDocuments() {
++    return fakeUserModel.cohortCount;
++  },
++};
++
++export const fakeAttemptModel = {
++  created: [],
++  async create(doc) {
++    fakeAttemptModel.created.push(doc);
++    return doc;
++  },
++};
++
++// Must be called before the service under test is imported.
++export function mockModels() {
++  mock.module(new URL("../../src/models/User.js", import.meta.url).href, { defaultExport: fakeUserModel });
++  mock.module(new URL("../../src/models/Attempt.js", import.meta.url).href, { defaultExport: fakeAttemptModel });
++}
++
++// A minimal stand-in for an ObjectId: has toString() and equals().
++export const oid = (value) => ({
++  value,
++  toString: () => value,
++  equals: (other) => String(other) === value,
++});
++
++export function makeUser(overrides = {}) {
++  return {
++    _id: oid("user-1"),
++    xp: 0,
++    gems: 0,
++    hearts: { current: 5, nextRefillAt: null },
++    streak: { current: 0, longest: 0, lastActivityAt: null },
++    league: { tier: 0, weekId: null, cohort: null, weeklyXp: 0 },
++    badges: [],
++    lessonProgress: [],
++    completedLessons: 0,
++    totalStudySeconds: 0,
++    saved: 0,
++    async save() { this.saved += 1; },
++    markModified() {},
++    ...overrides,
++  };
++}
++
++export function makeLesson(questionCount = 4, overrides = {}) {
++  return {
++    _id: oid("lesson-1"),
++    course: oid("course-1"),
++    questions: Array.from({ length: questionCount }, (_, i) => ({ id: `q${i + 1}` })),
++    ...overrides,
++  };
++}
+diff --git a/backend/tests/unit/league.service.test.js b/backend/tests/unit/league.service.test.js
+new file mode 100644
+index 0000000..d679e99
+--- /dev/null
++++ b/backend/tests/unit/league.service.test.js
+@@ -0,0 +1,182 @@
++// Unit tests for the weekly league rules (backend/src/services/league.service.js).
++// White-box: each test targets a specific branch of zonesFor / settleLeague / joinLeague.
++import assert from "node:assert/strict";
++import { beforeEach, describe, test } from "node:test";
++import { fakeUserModel, makeUser, mockModels, oid } from "./helpers.js";
++
++mockModels();
++const { TIERS, COHORT_SIZE, weekBounds, zonesFor, leagueView, settleLeague, joinLeague, standingsFor } =
++  await import("../../src/services/league.service.js");
++
++const LAST_WEEK = "2026-11-16";
++const peer = (id, xp) => ({ _id: oid(id), league: { weekId: LAST_WEEK, weeklyXp: xp } });
++
++describe("weekBounds", () => {
++  test("a Wednesday belongs to the week starting the Monday before", () => {
++    const { id, endsAt } = weekBounds(new Date("2026-11-25T10:00:00Z"));
++    assert.equal(id, "2026-11-23");
++    assert.equal(endsAt.toISOString(), "2026-11-30T00:00:00.000Z");
++  });
++
++  test("a Sunday still belongs to the previous Monday's week", () => {
++    assert.equal(weekBounds(new Date("2026-11-29T23:59:59Z")).id, "2026-11-23");
++  });
++
++  test("Monday 00:00 UTC starts a new week", () => {
++    assert.equal(weekBounds(new Date("2026-11-30T00:00:00Z")).id, "2026-11-30");
++  });
++});
++
++describe("zonesFor (CC = 3)", () => {
++  test("path 1: middle tier, full cohort -> promote 7, demote 5", () => {
++    assert.deepEqual(zonesFor(3, 30), { promote: 7, demote: 5 });
++  });
++
++  test("path 2: top tier never promotes", () => {
++    assert.deepEqual(zonesFor(TIERS.length - 1, 30), { promote: 0, demote: 5 });
++  });
++
++  test("path 3: bottom tier never demotes", () => {
++    assert.deepEqual(zonesFor(0, 30), { promote: 7, demote: 0 });
++  });
++
++  test("boundary: cohort of 12 (= 7 + 5) skips demotion, 13 does not", () => {
++    assert.equal(zonesFor(3, 12).demote, 0);
++    assert.equal(zonesFor(3, 13).demote, 5);
++  });
++});
++
++describe("leagueView", () => {
++  test("clamps an out-of-range tier and shows 0 points when not joined", () => {
++    const view = leagueView(makeUser({ league: { tier: 99, weekId: "1999-01-04", weeklyXp: 50 } }));
++    assert.equal(view.tier, TIERS.length - 1);
++    assert.equal(view.joined, false);
++    assert.equal(view.points, 0);
++  });
++
++  test("defaults to Bronze when the user has no league yet", () => {
++    const view = leagueView(makeUser({ league: undefined }));
++    assert.equal(view.id, "bronze");
++  });
++
++  test("shows weekly XP when joined this week", () => {
++    const view = leagueView(makeUser({ league: { tier: 2, weekId: weekBounds().id, weeklyXp: 40 } }));
++    assert.equal(view.joined, true);
++    assert.equal(view.points, 40);
++  });
++});
++
++describe("settleLeague", () => {
++  beforeEach(() => { fakeUserModel.peers = []; });
++
++  test("does nothing when the user never joined a week", async () => {
++    assert.equal(await settleLeague(makeUser()), false);
++  });
++
++  test("does nothing while the current week is still running", async () => {
++    const user = makeUser({ league: { tier: 1, weekId: weekBounds().id, cohort: 0, weeklyXp: 30 } });
++    assert.equal(await settleLeague(user), false);
++    assert.equal(user.league.tier, 1);
++  });
++
++  test("top-7 finisher with XP is promoted", async () => {
++    fakeUserModel.peers = [peer("user-1", 100), ...Array.from({ length: 19 }, (_, i) => peer(`p${i}`, 10))];
++    const user = makeUser({ league: { tier: 2, weekId: LAST_WEEK, cohort: 0, weeklyXp: 100 } });
++    assert.equal(await settleLeague(user), true);
++    assert.equal(user.league.lastResult.outcome, "promoted");
++    assert.equal(user.league.tier, 3);
++    assert.equal(user.league.weekId, null);
++    assert.equal(user.league.weeklyXp, 0);
++  });
++
++  test("bottom-5 finisher in a large cohort is demoted", async () => {
++    fakeUserModel.peers = [...Array.from({ length: 19 }, (_, i) => peer(`p${i}`, 50)), peer("user-1", 1)];
++    const user = makeUser({ league: { tier: 2, weekId: LAST_WEEK, cohort: 0, weeklyXp: 1 } });
++    await settleLeague(user);
++    assert.equal(user.league.lastResult.outcome, "demoted");
++    assert.equal(user.league.tier, 1);
++  });
++
++  test("a middle finisher stays in the same tier", async () => {
++    const others = Array.from({ length: 19 }, (_, i) => peer(`p${i}`, 100 - i));
++    fakeUserModel.peers = [...others.slice(0, 9), peer("user-1", 90.5), ...others.slice(9)];
++    const user = makeUser({ league: { tier: 2, weekId: LAST_WEEK, cohort: 0, weeklyXp: 90.5 } });
++    await settleLeague(user);
++    assert.equal(user.league.lastResult.rank, 11); // between promote (1-7) and demote (16-20)
++    assert.equal(user.league.lastResult.outcome, "stayed");
++    assert.equal(user.league.tier, 2);
++  });
++
++  test("rank 1 with 0 XP is NOT promoted (weeklyXp > 0 condition)", async () => {
++    fakeUserModel.peers = [peer("user-1", 0)];
++    const user = makeUser({ league: { tier: 2, weekId: LAST_WEEK, cohort: 0, weeklyXp: 0 } });
++    await settleLeague(user);
++    assert.equal(user.league.lastResult.outcome, "stayed");
++  });
++
++  test("ties are broken by id so ranking is deterministic", async () => {
++    fakeUserModel.peers = [peer("zzz", 10), peer("user-1", 10)];
++    const user = makeUser({ league: { tier: 2, weekId: LAST_WEEK, cohort: 0, weeklyXp: 10 } });
++    await settleLeague(user);
++    assert.equal(user.league.lastResult.rank, 1);
++  });
++
++  test("uses a peer's lastWeek snapshot if that peer already settled", async () => {
++    const settledPeer = { _id: oid("p-settled"), league: { weekId: null, lastWeek: { weekId: LAST_WEEK, xp: 500 } } };
++    fakeUserModel.peers = [settledPeer, peer("user-1", 20)];
++    const user = makeUser({ league: { tier: 2, weekId: LAST_WEEK, cohort: 0, weeklyXp: 20 } });
++    await settleLeague(user);
++    assert.equal(user.league.lastResult.rank, 2);
++  });
++});
++
++describe("settleLeague: learner missing from the peer list", () => {
++  test("falls back to last place", async () => {
++    fakeUserModel.peers = [peer("p1", 50), peer("p2", 40)];
++    const user = makeUser({ league: { tier: 2, weekId: LAST_WEEK, cohort: 0, weeklyXp: 5 } });
++    await settleLeague(user);
++    assert.equal(user.league.lastResult.rank, 2);
++  });
++});
++
++describe("joinLeague", () => {
++  test("assigns a cohort of 30 based on how many already joined", async () => {
++    fakeUserModel.cohortCount = 65;
++    const user = makeUser({ league: { tier: 1, weekId: null, cohort: null, weeklyXp: 0 } });
++    await joinLeague(user);
++    assert.equal(user.league.weekId, weekBounds().id);
++    assert.equal(user.league.cohort, Math.floor(65 / COHORT_SIZE));
++    assert.equal(user.league.cohort, 2);
++  });
++
++  test("does not reset weekly XP if already joined this week", async () => {
++    const user = makeUser({ league: { tier: 1, weekId: weekBounds().id, cohort: 0, weeklyXp: 70 } });
++    await joinLeague(user);
++    assert.equal(user.league.weeklyXp, 70);
++  });
++});
++
++describe("standingsFor", () => {
++  const person = (id, name, xp) => ({ _id: oid(id), name, league: { weeklyXp: xp }, streak: { current: 2 }, avatarStyle: "a" });
++
++  test("joined: ranks the cohort, marks the learner and shows an unseen result", async () => {
++    fakeUserModel.peers = [person("p1", "Bea", 90), person("user-1", "Ada", 40)];
++    const user = makeUser({ league: {
++      tier: 1, weekId: weekBounds().id, cohort: 0, weeklyXp: 40,
++      lastResult: { outcome: "promoted", fromTier: 0, toTier: 1, rank: 2, seen: false },
++    } });
++    const view = await standingsFor(user);
++    assert.equal(view.joined, true);
++    assert.deepEqual(view.rows.map((r) => [r.rank, r.name, r.isYou]), [[1, "Bea", false], [2, "Ada", true]]);
++    assert.deepEqual(view.zones, { promote: 7, demote: 0 }); // only 2 people: no demotion
++    assert.equal(view.lastResult.outcome, "promoted");
++  });
++
++  test("not joined: empty table, and an already-seen result is hidden", async () => {
++    const user = makeUser({ league: { tier: 1, weekId: null, lastResult: { outcome: "stayed", seen: true } } });
++    const view = await standingsFor(user);
++    assert.equal(view.joined, false);
++    assert.deepEqual(view.rows, []);
++    assert.equal(view.lastResult, null);
++  });
++});
+diff --git a/backend/tests/unit/progress.service.test.js b/backend/tests/unit/progress.service.test.js
+new file mode 100644
+index 0000000..c0aae21
+--- /dev/null
++++ b/backend/tests/unit/progress.service.test.js
+@@ -0,0 +1,162 @@
++// Unit tests for lesson completion and the course path
++// (backend/src/services/progress.service.js).
++import assert from "node:assert/strict";
++import { afterEach, beforeEach, describe, mock, test } from "node:test";
++import { fakeAttemptModel, makeLesson, makeUser, mockModels, oid } from "./helpers.js";
++
++mockModels();
++const { buildPath, recordCompletion } = await import("../../src/services/progress.service.js");
++
++const lessonDoc = (slug, { published = true } = {}) => ({
++  _id: oid(`id-${slug}`), slug, title: slug, xp: 20, difficulty: "beginner", estimatedMinutes: 5, published,
++});
++
++describe("buildPath (CC = 4)", () => {
++  const lessons = [lessonDoc("a"), lessonDoc("b"), lessonDoc("c"), lessonDoc("draft", { published: false })];
++
++  test("new learner: first lesson active, the rest locked, draft flagged", () => {
++    const path = buildPath(lessons, new Set());
++    assert.deepEqual(path.map((n) => n.status), ["active", "locked", "locked", "locked"]);
++    assert.equal(path[3].draft, true);
++  });
++
++  test("completed lessons show completed and unlock the next one", () => {
++    const path = buildPath(lessons, new Set(["id-a"]));
++    assert.deepEqual(path.map((n) => n.status), ["completed", "active", "locked", "locked"]);
++  });
++
++  test("all published lessons completed: no active node", () => {
++    const path = buildPath(lessons, new Set(["id-a", "id-b", "id-c"]));
++    assert.deepEqual(path.map((n) => n.status), ["completed", "completed", "completed", "locked"]);
++  });
++
++  test("missing summary and questionCount default safely", () => {
++    const [node] = buildPath([lessonDoc("a")], new Set());
++    assert.equal(node.summary, "");
++    assert.equal(node.questionCount, 0);
++  });
++});
++
++describe("recordCompletion", () => {
++  beforeEach(() => {
++    fakeAttemptModel.created = [];
++    mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-24T10:00:00Z") });
++  });
++  afterEach(() => mock.timers.reset());
++
++  test("perfect first run: XP bonus, gems, badges, no hearts lost", async () => {
++    const user = makeUser();
++    const { xpAwarded } = await recordCompletion(user, makeLesson(4), { correctCount: 4, timeSeconds: 90 });
++    assert.equal(xpAwarded, 4 * 10 + 10);
++    assert.equal(user.xp, 50);
++    assert.equal(user.gems, 5);
++    assert.equal(user.hearts.current, 5);
++    assert.equal(user.hearts.nextRefillAt, null);
++    assert.equal(user.completedLessons, 1);
++    assert.deepEqual(user.badges.map((b) => b.id), ["first-lesson", "perfect"]);
++    assert.equal(user.league.weeklyXp, 50);
++    assert.equal(fakeAttemptModel.created[0].accuracy, 100);
++    assert.equal(user.saved, 1);
++  });
++
++  test("partial run: hearts lost, refill timer started, no perfect bonus", async () => {
++    const user = makeUser();
++    const { xpAwarded } = await recordCompletion(user, makeLesson(4), { correctCount: 2, timeSeconds: 60 });
++    assert.equal(xpAwarded, 20);
++    assert.equal(user.gems, 0);
++    assert.equal(user.hearts.current, 3);
++    assert.ok(user.hearts.nextRefillAt instanceof Date);
++    assert.equal(fakeAttemptModel.created[0].accuracy, 50);
++  });
++
++  test("zero correct: no XP, so the learner does not join the league", async () => {
++    const user = makeUser();
++    const { xpAwarded } = await recordCompletion(user, makeLesson(3), { correctCount: 0, timeSeconds: 30 });
++    assert.equal(xpAwarded, 0);
++    assert.equal(user.league.weekId, null);
++  });
++
++  test("hearts never go below zero", async () => {
++    const user = makeUser({ hearts: { current: 1, nextRefillAt: null } });
++    await recordCompletion(user, makeLesson(4), { correctCount: 0, timeSeconds: 30 });
++    assert.equal(user.hearts.current, 0);
++  });
++
++  test("correctCount larger than the question count is capped", async () => {
++    const user = makeUser();
++    const { xpAwarded } = await recordCompletion(user, makeLesson(3), { correctCount: 99, timeSeconds: 30 });
++    assert.equal(xpAwarded, 40);
++  });
++
++  test("replaying a lesson updates best scores and does not count it twice", async () => {
++    const progress = { lesson: oid("lesson-1"), status: "completed", attempts: 1, bestAccuracy: 50, bestTimeSeconds: 120 };
++    const user = makeUser({ lessonProgress: [progress], completedLessons: 1 });
++    await recordCompletion(user, makeLesson(4), { correctCount: 4, timeSeconds: 80 });
++    assert.equal(progress.attempts, 2);
++    assert.equal(progress.bestAccuracy, 100);
++    assert.equal(progress.bestTimeSeconds, 80);
++    assert.equal(user.completedLessons, 1);
++    assert.ok(!user.badges.some((b) => b.id === "first-lesson"));
++  });
++
++  test("a slower replay keeps the old best time", async () => {
++    const progress = { lesson: oid("lesson-1"), status: "completed", attempts: 1, bestAccuracy: 100, bestTimeSeconds: 60 };
++    const user = makeUser({ lessonProgress: [progress], completedLessons: 1 });
++    await recordCompletion(user, makeLesson(2), { correctCount: 2, timeSeconds: 200 });
++    assert.equal(progress.bestTimeSeconds, 60);
++  });
++
++  test("replay with no earlier best time records the new time", async () => {
++    const progress = { lesson: oid("lesson-1"), status: "in-progress", attempts: 0, bestAccuracy: 0, bestTimeSeconds: 0 };
++    const user = makeUser({ lessonProgress: [progress] });
++    await recordCompletion(user, makeLesson(2), { correctCount: 2, timeSeconds: 45 });
++    assert.equal(progress.bestTimeSeconds, 45);
++    assert.equal(user.completedLessons, 1); // first *completion*, even though progress existed
++  });
++
++  test("replay with a missing time keeps the old best time", async () => {
++    const progress = { lesson: oid("lesson-1"), status: "completed", attempts: 1, bestAccuracy: 100, bestTimeSeconds: 60 };
++    const user = makeUser({ lessonProgress: [progress], completedLessons: 1 });
++    await recordCompletion(user, makeLesson(2), { correctCount: 2, timeSeconds: 0 });
++    assert.equal(progress.bestTimeSeconds, 60);
++  });
++
++  describe("streak", () => {
++    test("activity yesterday continues the streak", async () => {
++      const user = makeUser({ streak: { current: 3, longest: 3, lastActivityAt: new Date("2026-11-23T09:00:00Z") } });
++      await recordCompletion(user, makeLesson(1), { correctCount: 1, timeSeconds: 10 });
++      assert.equal(user.streak.current, 4);
++      assert.equal(user.streak.longest, 4);
++    });
++
++    test("a second lesson on the same day does not add to the streak", async () => {
++      const user = makeUser({ streak: { current: 3, longest: 5, lastActivityAt: new Date("2026-11-24T08:00:00Z") } });
++      await recordCompletion(user, makeLesson(1), { correctCount: 1, timeSeconds: 10 });
++      assert.equal(user.streak.current, 3);
++    });
++
++    test("a gap of several days resets the streak to 1 and keeps the longest", async () => {
++      const user = makeUser({ streak: { current: 6, longest: 6, lastActivityAt: new Date("2026-11-20T10:00:00Z") } });
++      await recordCompletion(user, makeLesson(1), { correctCount: 1, timeSeconds: 10 });
++      assert.equal(user.streak.current, 1);
++      assert.equal(user.streak.longest, 6);
++    });
++
++    test("first ever activity starts the streak at 1", async () => {
++      const user = makeUser();
++      await recordCompletion(user, makeLesson(1), { correctCount: 1, timeSeconds: 10 });
++      assert.equal(user.streak.current, 1);
++    });
++
++    // DEFECT found by white-box path analysis of updateStreak(): the gap is
++    // measured in whole 24 h blocks, not calendar days. Last activity Sunday
++    // 23:00, next activity Tuesday 00:30 (Monday skipped) gives 25.5 h ->
++    // gapDays = 1, so the streak wrongly continues.
++    test("a skipped calendar day resets the streak", { todo: "DEF-M2-01: updateStreak uses 24 h blocks instead of calendar days" }, async () => {
++      mock.timers.setTime(new Date("2026-11-24T00:30:00Z").getTime());
++      const user = makeUser({ streak: { current: 3, longest: 3, lastActivityAt: new Date("2026-11-22T23:00:00Z") } });
++      await recordCompletion(user, makeLesson(1), { correctCount: 1, timeSeconds: 10 });
++      assert.equal(user.streak.current, 1);
++    });
++  });
++});
+diff --git a/frontend/package.json b/frontend/package.json
+index f7d0f4b..99d7020 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -8,7 +8,9 @@
+     "dev": "vite",
+     "build": "vite build",
+     "preview": "vite preview",
+-    "test:ui": "playwright test"
++    "test:ui": "playwright test",
++    "test:unit": "node --test tests/unit/*.test.js",
++    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=src/lib/** --test-coverage-exclude=src/lib/sound.js --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info tests/unit/*.test.js"
+   },
+   "dependencies": {
+     "@fontsource-variable/baloo-2": "^5.3.0",
+diff --git a/frontend/tests/unit/leagues.test.js b/frontend/tests/unit/leagues.test.js
+new file mode 100644
+index 0000000..664a458
+--- /dev/null
++++ b/frontend/tests/unit/leagues.test.js
+@@ -0,0 +1,26 @@
++// Unit tests for the league countdown text (frontend/src/lib/leagues.js).
++import assert from "node:assert/strict";
++import { describe, test } from "node:test";
++import { timeLeft, weekBounds } from "../../src/lib/leagues.js";
++
++const NOW = new Date("2026-11-24T12:00:00Z").getTime();
++const after = (ms) => new Date(NOW + ms).toISOString();
++const MIN = 60000, HOUR = 3600000, DAY = 86400000;
++
++describe("timeLeft (CC = 6)", () => {
++  test("plural days", () => assert.equal(timeLeft(after(3 * DAY), NOW), "3 days"));
++  test("singular day (boundary: exactly 24 h)", () => assert.equal(timeLeft(after(DAY), NOW), "1 day"));
++  test("plural hours (just under a day)", () => assert.equal(timeLeft(after(DAY - 1), NOW), "23 hours"));
++  test("singular hour", () => assert.equal(timeLeft(after(HOUR), NOW), "1 hour"));
++  test("plural minutes", () => assert.equal(timeLeft(after(25 * MIN), NOW), "25 minutes"));
++  test("under a minute still shows 1 minute", () => assert.equal(timeLeft(after(10 * 1000), NOW), "1 minute"));
++  test("a past deadline is clamped to 1 minute, never negative", () => assert.equal(timeLeft(after(-5 * DAY), NOW), "1 minute"));
++});
++
++describe("weekBounds (frontend copy)", () => {
++  test("matches the backend: weeks start Monday 00:00 UTC", () => {
++    const { id, endsAt } = weekBounds(new Date("2026-11-25T10:00:00Z"));
++    assert.equal(id, "2026-11-23");
++    assert.equal(endsAt, "2026-11-30T00:00:00.000Z");
++  });
++});
+diff --git a/frontend/tests/unit/validation.test.js b/frontend/tests/unit/validation.test.js
+new file mode 100644
+index 0000000..617f0e8
+--- /dev/null
++++ b/frontend/tests/unit/validation.test.js
+@@ -0,0 +1,140 @@
++// Unit tests for client-side form validation (frontend/src/lib/validation.js).
++// Run: npm run test:unit -w frontend
++import assert from "node:assert/strict";
++import { describe, test } from "node:test";
++import { slugify, validateLesson, validateLogin, validateSignup } from "../../src/lib/validation.js";
++
++describe("validateSignup (CC = 5)", () => {
++  const valid = { name: "Ada", email: "ada@curio.dev", password: "Learner123" };
++
++  test("path 1: all fields valid -> no errors", () => {
++    assert.deepEqual(validateSignup(valid), {});
++  });
++
++  test("path 2: name shorter than 2 characters (after trimming)", () => {
++    assert.equal(validateSignup({ ...valid, name: " A " }).name, "Name must be at least 2 characters");
++  });
++
++  test("path 3: invalid email", () => {
++    assert.equal(validateSignup({ ...valid, email: "ada@curio" }).email, "Enter a valid email address");
++  });
++
++  test("path 4: password shorter than 8", () => {
++    assert.equal(validateSignup({ ...valid, password: "abc123" }).password, "Password must be at least 8 characters");
++  });
++
++  test("path 5: long password with no number", () => {
++    assert.equal(validateSignup({ ...valid, password: "abcdefgh" }).password, "Password must contain a letter and a number");
++  });
++
++  test("path 5b: long password with no letter", () => {
++    assert.equal(validateSignup({ ...valid, password: "12345678" }).password, "Password must contain a letter and a number");
++  });
++
++  test("BVA: password of exactly 7 / 8 characters", () => {
++    assert.ok(validateSignup({ ...valid, password: "abcd123" }).password);
++    assert.equal(validateSignup({ ...valid, password: "abcd1234" }).password, undefined);
++  });
++
++  test("several invalid fields are all reported together", () => {
++    assert.deepEqual(Object.keys(validateSignup({ name: "", email: "x", password: "" })).sort(), ["email", "name", "password"]);
++  });
++});
++
++describe("validateLogin", () => {
++  test("valid credentials", () => {
++    assert.deepEqual(validateLogin({ email: "a@b.co", password: "x" }), {});
++  });
++
++  test("empty password and bad email", () => {
++    assert.deepEqual(validateLogin({ email: "nope", password: "" }), {
++      email: "Enter a valid email address",
++      password: "Password is required",
++    });
++  });
++});
++
++describe("slugify", () => {
++  test("lowercases, strips accents and joins words with dashes", () => {
++    assert.equal(slugify("  Schrödinger's Équation! "), "schrodinger-s-equation");
++  });
++
++  test("handles empty / null input", () => {
++    assert.equal(slugify(null), "");
++  });
++
++  test("is capped at 60 characters", () => {
++    assert.equal(slugify("a".repeat(100)).length, 60);
++  });
++});
++
++describe("validateLesson", () => {
++  const lesson = (overrides = {}) => ({
++    title: "Torque", slug: "torque", summary: "", course: "c1", order: "1", xp: "20",
++    estimatedMinutes: "5", published: false, questions: [], ...overrides,
++  });
++  const mcq = (overrides = {}) => ({ type: "mcq", prompt: "Pick", options: ["a", "b"], correctIndex: 0, ...overrides });
++
++  test("a valid draft has no errors", () => {
++    assert.deepEqual(validateLesson(lesson()), {});
++  });
++
++  test("title shorter than 3 and longer than 80", () => {
++    assert.match(validateLesson(lesson({ title: "ab" })).title, /at least 3/);
++    assert.match(validateLesson(lesson({ title: "x".repeat(81) })).title, /80 characters/);
++  });
++
++  test("bad slug, long summary and missing course", () => {
++    const errors = validateLesson(lesson({ slug: "Bad Slug", summary: "s".repeat(241), course: "" }));
++    assert.ok(errors.slug && errors.summary && errors.course);
++  });
++
++  test("BVA on XP: 4 and 101 rejected, 5 and 100 accepted, decimals and empty rejected", () => {
++    for (const xp of ["4", "101", "20.5", ""]) assert.ok(validateLesson(lesson({ xp })).xp, `xp=${xp}`);
++    for (const xp of ["5", "100"]) assert.equal(validateLesson(lesson({ xp })).xp, undefined, `xp=${xp}`);
++  });
++
++  test("order and minutes out of range", () => {
++    const errors = validateLesson(lesson({ order: "0", estimatedMinutes: "61" }));
++    assert.ok(errors.order && errors.estimatedMinutes);
++  });
++
++  test("publishing without questions is rejected", () => {
++    assert.equal(validateLesson(lesson({ published: true })).questions, "Add at least one question before publishing");
++  });
++
++  test("mcq: empty prompt, empty option and correctIndex out of range", () => {
++    const errors = validateLesson(lesson({ questions: [mcq({ prompt: " ", options: ["a", ""], correctIndex: 5 })] }));
++    assert.ok(errors["questions.0.prompt"]);
++    assert.ok(errors["questions.0.options"]);
++    assert.ok(errors["questions.0.correctIndex"]);
++  });
++
++  test("mcq: missing correctIndex", () => {
++    assert.ok(validateLesson(lesson({ questions: [mcq({ correctIndex: null })] }))["questions.0.correctIndex"]);
++  });
++
++  test("numeric: empty or non-number answer rejected, 0 accepted", () => {
++    const numeric = (answer) => ({ type: "numeric", prompt: "2+2", answer });
++    assert.ok(validateLesson(lesson({ questions: [numeric("")] }))["questions.0.answer"]);
++    assert.ok(validateLesson(lesson({ questions: [numeric("four")] }))["questions.0.answer"]);
++    assert.equal(validateLesson(lesson({ questions: [numeric("0")] }))["questions.0.answer"], undefined);
++  });
++
++  test("interactive and lab questions only need a prompt", () => {
++    const errors = validateLesson(lesson({ questions: [{ type: "interactive", prompt: "Explore" }, { type: "lab", prompt: "" }] }));
++    assert.deepEqual(Object.keys(errors), ["questions.1.prompt"]);
++  });
++
++  test("order: fewer than 2 steps rejected, error key uses the question index", () => {
++    const order = { type: "order", prompt: "Sort", items: ["only one"] };
++    const errors = validateLesson(lesson({ questions: [mcq(), order] }));
++    assert.ok(errors["questions.1.items"]);
++    assert.equal(errors["questions.0.options"], undefined);
++  });
++
++  test("order: two filled steps are accepted", () => {
++    const order = { type: "order", prompt: "Sort", items: ["first", "second"] };
++    assert.deepEqual(validateLesson(lesson({ questions: [order] })), {});
++  });
++});
+-- 
+2.43.0
+
+From ff11e85dba80f473e3f1be5a4baee3fe579696ee Mon Sep 17 00:00:00 2001
+From: Curio Member 2 <member2@curio.local>
+Date: Tue, 24 Nov 2026 15:36:54 +0530
+Subject: [PATCH 2/6] test(RED): specify scoreRun before it exists
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011AYoWv6wE9SScZMABpyZBG
+---
+ backend/tests/unit/scoring.test.js  | 41 +++++++++++++++++++++++++++++
+ docs/testing/evidence/tdd-1-red.txt | 37 ++++++++++++++++++++++++++
+ 2 files changed, 78 insertions(+)
+ create mode 100644 backend/tests/unit/scoring.test.js
+ create mode 100644 docs/testing/evidence/tdd-1-red.txt
+
+diff --git a/backend/tests/unit/scoring.test.js b/backend/tests/unit/scoring.test.js
+new file mode 100644
+index 0000000..710963c
+--- /dev/null
++++ b/backend/tests/unit/scoring.test.js
+@@ -0,0 +1,41 @@
++// TDD: these tests were written BEFORE src/services/scoring.js existed.
++// Requirement: turn a finished lesson run into its score, using the same
++// rules as recordCompletion (10 XP per correct answer, +10 for a perfect run).
++import assert from "node:assert/strict";
++import { describe, test } from "node:test";
++import { scoreRun } from "../../src/services/scoring.js";
++
++describe("scoreRun", () => {
++  test("perfect run earns 10 XP per answer plus a 10 XP bonus", () => {
++    assert.deepEqual(scoreRun({ total: 4, correctCount: 4 }), {
++      correct: 4, wrong: 0, perfect: true, accuracy: 100, xpAwarded: 50,
++    });
++  });
++
++  test("partial run: no bonus, accuracy rounded to a whole percent", () => {
++    assert.deepEqual(scoreRun({ total: 3, correctCount: 2 }), {
++      correct: 2, wrong: 1, perfect: false, accuracy: 67, xpAwarded: 20,
++    });
++  });
++
++  test("zero correct earns nothing", () => {
++    const score = scoreRun({ total: 5, correctCount: 0 });
++    assert.equal(score.xpAwarded, 0);
++    assert.equal(score.wrong, 5);
++  });
++
++  test("correctCount above the total is capped", () => {
++    assert.equal(scoreRun({ total: 2, correctCount: 9 }).correct, 2);
++  });
++
++  test("negative correctCount is treated as 0", () => {
++    assert.equal(scoreRun({ total: 2, correctCount: -3 }).correct, 0);
++  });
++
++  test("a lesson with no questions never produces NaN and is not 'perfect'", () => {
++    const score = scoreRun({ total: 0, correctCount: 0 });
++    assert.equal(score.accuracy, 0);
++    assert.equal(score.perfect, false);
++    assert.equal(score.xpAwarded, 0);
++  });
++});
+diff --git a/docs/testing/evidence/tdd-1-red.txt b/docs/testing/evidence/tdd-1-red.txt
+new file mode 100644
+index 0000000..d92b8c4
+--- /dev/null
++++ b/docs/testing/evidence/tdd-1-red.txt
+@@ -0,0 +1,37 @@
++TAP version 13
++# node:internal/modules/esm/resolve:275
++#     throw new ERR_MODULE_NOT_FOUND(
++#           ^
++# Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/home/claude/hasindu44/curio/backend/src/services/scoring.js' imported from /home/claude/hasindu44/curio/backend/tests/unit/scoring.test.js
++#     at finalizeResolution (node:internal/modules/esm/resolve:275:11)
++#     at moduleResolve (node:internal/modules/esm/resolve:865:10)
++#     at defaultResolve (node:internal/modules/esm/resolve:989:11)
++#     at \#cachedDefaultResolve (node:internal/modules/esm/loader:747:20)
++#     at ModuleLoader.resolve (node:internal/modules/esm/loader:724:38)
++#     at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:320:38)
++#     at ModuleJob._link (node:internal/modules/esm/module_job:182:49) {
++#   code: 'ERR_MODULE_NOT_FOUND',
++#   url: 'file:///home/claude/hasindu44/curio/backend/src/services/scoring.js'
++# }
++# Node.js v22.23.5
++# Subtest: tests/unit/scoring.test.js
++not ok 1 - tests/unit/scoring.test.js
++  ---
++  duration_ms: 42.955932
++  type: 'test'
++  location: '/home/claude/hasindu44/curio/backend/tests/unit/scoring.test.js:1:1'
++  failureType: 'testCodeFailure'
++  exitCode: 1
++  signal: ~
++  error: 'test failed'
++  code: 'ERR_TEST_FAILURE'
++  ...
++1..1
++# tests 1
++# suites 0
++# pass 0
++# fail 1
++# cancelled 0
++# skipped 0
++# todo 0
++# duration_ms 50.353279
+-- 
+2.43.0
+
+From 2535a93ae8d4196f304716c2b209b294bb8c7c11 Mon Sep 17 00:00:00 2001
+From: Curio Member 2 <member2@curio.local>
+Date: Tue, 24 Nov 2026 15:37:01 +0530
+Subject: [PATCH 3/6] feat(GREEN): implement scoreRun to pass its tests
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011AYoWv6wE9SScZMABpyZBG
+---
+ backend/src/services/scoring.js       | 11 ++++++
+ docs/testing/evidence/tdd-2-green.txt | 53 +++++++++++++++++++++++++++
+ 2 files changed, 64 insertions(+)
+ create mode 100644 backend/src/services/scoring.js
+ create mode 100644 docs/testing/evidence/tdd-2-green.txt
+
+diff --git a/backend/src/services/scoring.js b/backend/src/services/scoring.js
+new file mode 100644
+index 0000000..f2de611
+--- /dev/null
++++ b/backend/src/services/scoring.js
+@@ -0,0 +1,11 @@
++const XP_PER_CORRECT = 10;
++const PERFECT_BONUS = 10;
++
++// Scores one finished lesson run. Pure function: no database, no clock.
++export function scoreRun({ total, correctCount }) {
++  const correct = Math.max(0, Math.min(total, correctCount));
++  const perfect = total > 0 && correct === total;
++  const accuracy = total > 0 ? Math.round((correct / total) * 100) : 0;
++  const xpAwarded = correct * XP_PER_CORRECT + (perfect ? PERFECT_BONUS : 0);
++  return { correct, wrong: total - correct, perfect, accuracy, xpAwarded };
++}
+diff --git a/docs/testing/evidence/tdd-2-green.txt b/docs/testing/evidence/tdd-2-green.txt
+new file mode 100644
+index 0000000..4f0bc6b
+--- /dev/null
++++ b/docs/testing/evidence/tdd-2-green.txt
+@@ -0,0 +1,53 @@
++TAP version 13
++# Subtest: scoreRun
++    # Subtest: perfect run earns 10 XP per answer plus a 10 XP bonus
++    ok 1 - perfect run earns 10 XP per answer plus a 10 XP bonus
++      ---
++      duration_ms: 1.064907
++      type: 'test'
++      ...
++    # Subtest: partial run: no bonus, accuracy rounded to a whole percent
++    ok 2 - partial run: no bonus, accuracy rounded to a whole percent
++      ---
++      duration_ms: 0.112883
++      type: 'test'
++      ...
++    # Subtest: zero correct earns nothing
++    ok 3 - zero correct earns nothing
++      ---
++      duration_ms: 1.128165
++      type: 'test'
++      ...
++    # Subtest: correctCount above the total is capped
++    ok 4 - correctCount above the total is capped
++      ---
++      duration_ms: 0.123134
++      type: 'test'
++      ...
++    # Subtest: negative correctCount is treated as 0
++    ok 5 - negative correctCount is treated as 0
++      ---
++      duration_ms: 0.120072
++      type: 'test'
++      ...
++    # Subtest: a lesson with no questions never produces NaN and is not 'perfect'
++    ok 6 - a lesson with no questions never produces NaN and is not 'perfect'
++      ---
++      duration_ms: 0.131137
++      type: 'test'
++      ...
++    1..6
++ok 1 - scoreRun
++  ---
++  duration_ms: 3.462593
++  type: 'suite'
++  ...
++1..1
++# tests 6
++# suites 1
++# pass 6
++# fail 0
++# cancelled 0
++# skipped 0
++# todo 0
++# duration_ms 64.375099
+-- 
+2.43.0
+
+From 301eaea271304d9542768b2acc7b0ef75fe1b6b7 Mon Sep 17 00:00:00 2001
+From: Curio Member 2 <member2@curio.local>
+Date: Tue, 24 Nov 2026 15:37:09 +0530
+Subject: [PATCH 4/6] refactor: use scoreRun in recordCompletion (all tests
+ still green)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011AYoWv6wE9SScZMABpyZBG
+---
+ backend/src/services/progress.service.js |   7 +-
+ docs/testing/evidence/tdd-3-refactor.txt | 394 +++++++++++++++++++++++
+ 2 files changed, 396 insertions(+), 5 deletions(-)
+ create mode 100644 docs/testing/evidence/tdd-3-refactor.txt
+
+diff --git a/backend/src/services/progress.service.js b/backend/src/services/progress.service.js
+index b000f81..19e4a79 100644
+--- a/backend/src/services/progress.service.js
++++ b/backend/src/services/progress.service.js
+@@ -1,5 +1,6 @@
+ import Attempt from "../models/Attempt.js";
+ import { joinLeague, settleLeague } from "./league.service.js";
++import { scoreRun } from "./scoring.js";
+ 
+ const HEART_REFILL_MS = 5 * 60 * 1000;
+ const DAY_MS = 86400000;
+@@ -43,10 +44,7 @@ function awardBadges(user, { firstCompletion, perfect }) {
+ export async function recordCompletion(user, lesson, { correctCount, timeSeconds }) {
+   const now = new Date();
+   const total = lesson.questions.length;
+-  const correct = Math.min(total, correctCount);
+-  const perfect = correct === total;
+-  const accuracy = Math.round((correct / total) * 100);
+-  const xpAwarded = correct * 10 + (perfect ? 10 : 0);
++  const { correct, wrong, perfect, accuracy, xpAwarded } = scoreRun({ total, correctCount });
+ 
+   const progress = user.lessonProgress.find((item) => item.lesson.equals(lesson._id));
+   const firstCompletion = progress?.status !== "completed";
+@@ -68,7 +66,6 @@ export async function recordCompletion(user, lesson, { correctCount, timeSeconds
+   }
+   if (perfect) user.gems += 5;
+ 
+-  const wrong = total - correct;
+   user.hearts.current = Math.max(0, user.hearts.current - wrong);
+   if (wrong > 0 && !user.hearts.nextRefillAt) user.hearts.nextRefillAt = new Date(now.getTime() + HEART_REFILL_MS);
+ 
+diff --git a/docs/testing/evidence/tdd-3-refactor.txt b/docs/testing/evidence/tdd-3-refactor.txt
+new file mode 100644
+index 0000000..ffc211d
+--- /dev/null
++++ b/docs/testing/evidence/tdd-3-refactor.txt
+@@ -0,0 +1,394 @@
++
++> curio-backend@1.0.0 test:unit
++> node --test --experimental-test-module-mocks tests/unit/*.test.js
++
++TAP version 13
++# (node:813) ExperimentalWarning: Module mocking is an experimental feature and might change at any time
++# (Use `node --trace-warnings ...` to show where the warning was created)
++# Subtest: weekBounds
++    # Subtest: a Wednesday belongs to the week starting the Monday before
++    ok 1 - a Wednesday belongs to the week starting the Monday before
++      ---
++      duration_ms: 0.864912
++      type: 'test'
++      ...
++    # Subtest: a Sunday still belongs to the previous Monday's week
++    ok 2 - a Sunday still belongs to the previous Monday's week
++      ---
++      duration_ms: 0.114704
++      type: 'test'
++      ...
++    # Subtest: Monday 00:00 UTC starts a new week
++    ok 3 - Monday 00:00 UTC starts a new week
++      ---
++      duration_ms: 0.071717
++      type: 'test'
++      ...
++    1..3
++ok 1 - weekBounds
++  ---
++  duration_ms: 1.755156
++  type: 'suite'
++  ...
++# Subtest: zonesFor (CC = 3)
++    # Subtest: path 1: middle tier, full cohort -> promote 7, demote 5
++    ok 1 - path 1: middle tier, full cohort -> promote 7, demote 5
++      ---
++      duration_ms: 0.634118
++      type: 'test'
++      ...
++    # Subtest: path 2: top tier never promotes
++    ok 2 - path 2: top tier never promotes
++      ---
++      duration_ms: 0.085594
++      type: 'test'
++      ...
++    # Subtest: path 3: bottom tier never demotes
++    ok 3 - path 3: bottom tier never demotes
++      ---
++      duration_ms: 0.212426
++      type: 'test'
++      ...
++    # Subtest: boundary: cohort of 12 (= 7 + 5) skips demotion, 13 does not
++    ok 4 - boundary: cohort of 12 (= 7 + 5) skips demotion, 13 does not
++      ---
++      duration_ms: 0.128282
++      type: 'test'
++      ...
++    1..4
++ok 2 - zonesFor (CC = 3)
++  ---
++  duration_ms: 2.620363
++  type: 'suite'
++  ...
++# Subtest: leagueView
++    # Subtest: clamps an out-of-range tier and shows 0 points when not joined
++    ok 1 - clamps an out-of-range tier and shows 0 points when not joined
++      ---
++      duration_ms: 0.268924
++      type: 'test'
++      ...
++    # Subtest: defaults to Bronze when the user has no league yet
++    ok 2 - defaults to Bronze when the user has no league yet
++      ---
++      duration_ms: 0.119402
++      type: 'test'
++      ...
++    # Subtest: shows weekly XP when joined this week
++    ok 3 - shows weekly XP when joined this week
++      ---
++      duration_ms: 0.171149
++      type: 'test'
++      ...
++    1..3
++ok 3 - leagueView
++  ---
++  duration_ms: 0.706454
++  type: 'suite'
++  ...
++# Subtest: settleLeague
++    # Subtest: does nothing when the user never joined a week
++    ok 1 - does nothing when the user never joined a week
++      ---
++      duration_ms: 0.315744
++      type: 'test'
++      ...
++    # Subtest: does nothing while the current week is still running
++    ok 2 - does nothing while the current week is still running
++      ---
++      duration_ms: 0.142902
++      type: 'test'
++      ...
++    # Subtest: top-7 finisher with XP is promoted
++    ok 3 - top-7 finisher with XP is promoted
++      ---
++      duration_ms: 6.603787
++      type: 'test'
++      ...
++    # Subtest: bottom-5 finisher in a large cohort is demoted
++    ok 4 - bottom-5 finisher in a large cohort is demoted
++      ---
++      duration_ms: 0.248145
++      type: 'test'
++      ...
++    # Subtest: a middle finisher stays in the same tier
++    ok 5 - a middle finisher stays in the same tier
++      ---
++      duration_ms: 0.256511
++      type: 'test'
++      ...
++    # Subtest: rank 1 with 0 XP is NOT promoted (weeklyXp > 0 condition)
++    ok 6 - rank 1 with 0 XP is NOT promoted (weeklyXp > 0 condition)
++      ---
++      duration_ms: 0.205744
++      type: 'test'
++      ...
++    # Subtest: ties are broken by id so ranking is deterministic
++    ok 7 - ties are broken by id so ranking is deterministic
++      ---
++      duration_ms: 0.142395
++      type: 'test'
++      ...
++    # Subtest: uses a peer's lastWeek snapshot if that peer already settled
++    ok 8 - uses a peer's lastWeek snapshot if that peer already settled
++      ---
++      duration_ms: 0.112678
++      type: 'test'
++      ...
++    1..8
++ok 4 - settleLeague
++  ---
++  duration_ms: 8.198054
++  type: 'suite'
++  ...
++# Subtest: settleLeague: learner missing from the peer list
++    # Subtest: falls back to last place
++    ok 1 - falls back to last place
++      ---
++      duration_ms: 0.100701
++      type: 'test'
++      ...
++    1..1
++ok 5 - settleLeague: learner missing from the peer list
++  ---
++  duration_ms: 0.138596
++  type: 'suite'
++  ...
++# Subtest: joinLeague
++    # Subtest: assigns a cohort of 30 based on how many already joined
++    ok 1 - assigns a cohort of 30 based on how many already joined
++      ---
++      duration_ms: 0.132436
++      type: 'test'
++      ...
++    # Subtest: does not reset weekly XP if already joined this week
++    ok 2 - does not reset weekly XP if already joined this week
++      ---
++      duration_ms: 0.101635
++      type: 'test'
++      ...
++    1..2
++ok 6 - joinLeague
++  ---
++  duration_ms: 0.280222
++  type: 'suite'
++  ...
++# Subtest: standingsFor
++    # Subtest: joined: ranks the cohort, marks the learner and shows an unseen result
++    ok 1 - joined: ranks the cohort, marks the learner and shows an unseen result
++      ---
++      duration_ms: 0.281556
++      type: 'test'
++      ...
++    # Subtest: not joined: empty table, and an already-seen result is hidden
++    ok 2 - not joined: empty table, and an already-seen result is hidden
++      ---
++      duration_ms: 0.078342
++      type: 'test'
++      ...
++    1..2
++ok 7 - standingsFor
++  ---
++  duration_ms: 0.415456
++  type: 'suite'
++  ...
++# (node:821) ExperimentalWarning: Module mocking is an experimental feature and might change at any time
++# (Use `node --trace-warnings ...` to show where the warning was created)
++# (node:821) ExperimentalWarning: The MockTimers API is an experimental feature and might change at any time
++# Subtest: buildPath (CC = 4)
++    # Subtest: new learner: first lesson active, the rest locked, draft flagged
++    ok 1 - new learner: first lesson active, the rest locked, draft flagged
++      ---
++      duration_ms: 1.049788
++      type: 'test'
++      ...
++    # Subtest: completed lessons show completed and unlock the next one
++    ok 2 - completed lessons show completed and unlock the next one
++      ---
++      duration_ms: 0.269167
++      type: 'test'
++      ...
++    # Subtest: all published lessons completed: no active node
++    ok 3 - all published lessons completed: no active node
++      ---
++      duration_ms: 0.120445
++      type: 'test'
++      ...
++    # Subtest: missing summary and questionCount default safely
++    ok 4 - missing summary and questionCount default safely
++      ---
++      duration_ms: 0.206546
++      type: 'test'
++      ...
++    1..4
++ok 8 - buildPath (CC = 4)
++  ---
++  duration_ms: 2.472764
++  type: 'suite'
++  ...
++# Subtest: recordCompletion
++    # Subtest: perfect first run: XP bonus, gems, badges, no hearts lost
++    ok 1 - perfect first run: XP bonus, gems, badges, no hearts lost
++      ---
++      duration_ms: 3.139612
++      type: 'test'
++      ...
++    # Subtest: partial run: hearts lost, refill timer started, no perfect bonus
++    ok 2 - partial run: hearts lost, refill timer started, no perfect bonus
++      ---
++      duration_ms: 0.491613
++      type: 'test'
++      ...
++    # Subtest: zero correct: no XP, so the learner does not join the league
++    ok 3 - zero correct: no XP, so the learner does not join the league
++      ---
++      duration_ms: 0.40003
++      type: 'test'
++      ...
++    # Subtest: hearts never go below zero
++    ok 4 - hearts never go below zero
++      ---
++      duration_ms: 0.279083
++      type: 'test'
++      ...
++    # Subtest: correctCount larger than the question count is capped
++    ok 5 - correctCount larger than the question count is capped
++      ---
++      duration_ms: 0.313061
++      type: 'test'
++      ...
++    # Subtest: replaying a lesson updates best scores and does not count it twice
++    ok 6 - replaying a lesson updates best scores and does not count it twice
++      ---
++      duration_ms: 0.307124
++      type: 'test'
++      ...
++    # Subtest: a slower replay keeps the old best time
++    ok 7 - a slower replay keeps the old best time
++      ---
++      duration_ms: 0.204152
++      type: 'test'
++      ...
++    # Subtest: replay with no earlier best time records the new time
++    ok 8 - replay with no earlier best time records the new time
++      ---
++      duration_ms: 0.16415
++      type: 'test'
++      ...
++    # Subtest: replay with a missing time keeps the old best time
++    ok 9 - replay with a missing time keeps the old best time
++      ---
++      duration_ms: 0.379389
++      type: 'test'
++      ...
++    # Subtest: streak
++        # Subtest: activity yesterday continues the streak
++        ok 1 - activity yesterday continues the streak
++          ---
++          duration_ms: 0.303176
++          type: 'test'
++          ...
++        # Subtest: a second lesson on the same day does not add to the streak
++        ok 2 - a second lesson on the same day does not add to the streak
++          ---
++          duration_ms: 1.11683
++          type: 'test'
++          ...
++        # Subtest: a gap of several days resets the streak to 1 and keeps the longest
++        ok 3 - a gap of several days resets the streak to 1 and keeps the longest
++          ---
++          duration_ms: 0.254664
++          type: 'test'
++          ...
++        # Subtest: first ever activity starts the streak at 1
++        ok 4 - first ever activity starts the streak at 1
++          ---
++          duration_ms: 0.259196
++          type: 'test'
++          ...
++        # Subtest: a skipped calendar day resets the streak
++        not ok 5 - a skipped calendar day resets the streak # TODO DEF-M2-01: updateStreak uses 24 h blocks instead of calendar days
++          ---
++          duration_ms: 1.145678
++          type: 'test'
++          location: '/home/claude/hasindu44/curio/backend/tests/unit/progress.service.test.js:155:5'
++          failureType: 'testCodeFailure'
++          error: |-
++            Expected values to be strictly equal:
++            
++            4 !== 1
++            
++          code: 'ERR_ASSERTION'
++          name: 'AssertionError'
++          expected: 1
++          actual: 4
++          operator: 'strictEqual'
++          stack: |-
++            TestContext.<anonymous> (file:///home/claude/hasindu44/curio/backend/tests/unit/progress.service.test.js:159:14)
++            async Test.run (node:internal/test_runner/test:1054:7)
++            async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
++          ...
++        1..5
++    ok 10 - streak
++      ---
++      duration_ms: 3.27022
++      type: 'suite'
++      ...
++    1..10
++ok 9 - recordCompletion
++  ---
++  duration_ms: 9.304703
++  type: 'suite'
++  ...
++# Subtest: scoreRun
++    # Subtest: perfect run earns 10 XP per answer plus a 10 XP bonus
++    ok 1 - perfect run earns 10 XP per answer plus a 10 XP bonus
++      ---
++      duration_ms: 1.044049
++      type: 'test'
++      ...
++    # Subtest: partial run: no bonus, accuracy rounded to a whole percent
++    ok 2 - partial run: no bonus, accuracy rounded to a whole percent
++      ---
++      duration_ms: 0.124989
++      type: 'test'
++      ...
++    # Subtest: zero correct earns nothing
++    ok 3 - zero correct earns nothing
++      ---
++      duration_ms: 1.272698
++      type: 'test'
++      ...
++    # Subtest: correctCount above the total is capped
++    ok 4 - correctCount above the total is capped
++      ---
++      duration_ms: 0.143429
++      type: 'test'
++      ...
++    # Subtest: negative correctCount is treated as 0
++    ok 5 - negative correctCount is treated as 0
++      ---
++      duration_ms: 0.085087
++      type: 'test'
++      ...
++    # Subtest: a lesson with no questions never produces NaN and is not 'perfect'
++    ok 6 - a lesson with no questions never produces NaN and is not 'perfect'
++      ---
++      duration_ms: 0.210075
++      type: 'test'
++      ...
++    1..6
++ok 10 - scoreRun
++  ---
++  duration_ms: 3.730041
++  type: 'suite'
++  ...
++1..10
++# tests 47
++# suites 11
++# pass 46
++# fail 0
++# cancelled 0
++# skipped 0
++# todo 1
++# duration_ms 297.753827
+-- 
+2.43.0
+
+From 20c061ea58fcdbad64933d31cd62b880a0375f8e Mon Sep 17 00:00:00 2001
+From: Curio Member 2 <member2@curio.local>
+Date: Tue, 24 Nov 2026 15:38:28 +0530
+Subject: [PATCH 5/6] test(BDD): add Gherkin features and Cucumber step
+ definitions
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011AYoWv6wE9SScZMABpyZBG
+---
+ .gitignore                                 |   1 +
+ backend/cucumber.js                        |   6 ++
+ backend/features/league_zones.feature      |  22 +++++
+ backend/features/learning_path.feature     |  28 ++++++
+ backend/features/lesson_scoring.feature    |  36 +++++++
+ backend/features/signup_validation.feature |  22 +++++
+ backend/features/step_definitions/steps.js | 106 +++++++++++++++++++++
+ backend/package.json                       |   4 +-
+ 8 files changed, 224 insertions(+), 1 deletion(-)
+ create mode 100644 backend/cucumber.js
+ create mode 100644 backend/features/league_zones.feature
+ create mode 100644 backend/features/learning_path.feature
+ create mode 100644 backend/features/lesson_scoring.feature
+ create mode 100644 backend/features/signup_validation.feature
+ create mode 100644 backend/features/step_definitions/steps.js
+
+diff --git a/.gitignore b/.gitignore
+index 43dc582..7c479c3 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -8,3 +8,4 @@ test-results/
+ playwright-report/
+ 
+ coverage/
++reports/
+diff --git a/backend/cucumber.js b/backend/cucumber.js
+new file mode 100644
+index 0000000..73182c5
+--- /dev/null
++++ b/backend/cucumber.js
+@@ -0,0 +1,6 @@
++// Cucumber.js configuration. Run: npm run test:bdd -w backend
++export default {
++  paths: ["features/**/*.feature"],
++  import: ["features/step_definitions/**/*.js"],
++  format: ["progress-bar", "html:reports/cucumber-report.html", "json:reports/cucumber-report.json"],
++};
+diff --git a/backend/features/league_zones.feature b/backend/features/league_zones.feature
+new file mode 100644
+index 0000000..9b2289e
+--- /dev/null
++++ b/backend/features/league_zones.feature
+@@ -0,0 +1,22 @@
++Feature: Weekly league promotion and demotion
++  As a learner competing in a weekly league
++  I want clear promotion and demotion zones
++  So that I know what I need to do to move up
++
++  Scenario Outline: Zone sizes by tier and cohort size
++    Given a learner in tier <tier>
++    And a cohort of <size> learners
++    When the week's zones are calculated
++    Then the top <promote> learners are promoted
++    And the bottom <demote> learners are demoted
++
++    Examples: Normal tiers
++      | tier | size | promote | demote |
++      | 3    | 30   | 7       | 5      |
++      | 3    | 13   | 7       | 5      |
++
++    Examples: Edge cases
++      | tier | size | promote | demote |
++      | 0    | 30   | 7       | 0      |
++      | 9    | 30   | 0       | 5      |
++      | 3    | 12   | 7       | 0      |
+diff --git a/backend/features/learning_path.feature b/backend/features/learning_path.feature
+new file mode 100644
+index 0000000..faea273
+--- /dev/null
++++ b/backend/features/learning_path.feature
+@@ -0,0 +1,28 @@
++Feature: Course learning path
++  As a learner
++  I want lessons to unlock one at a time
++  So that I follow the course in order
++
++  Background:
++    Given a course with the published lessons "vectors, forces, torque"
++    And a draft lesson "momentum"
++
++  Scenario: A new learner can only start the first lesson
++    Given the learner has completed no lessons
++    When the learner opens the course path
++    Then "vectors" is "active"
++    And "forces" is "locked"
++    And "torque" is "locked"
++
++  Scenario: Completing a lesson unlocks the next one
++    Given the learner has completed "vectors"
++    When the learner opens the course path
++    Then "vectors" is "completed"
++    And "forces" is "active"
++    And "torque" is "locked"
++
++  Scenario: Draft lessons stay locked and are marked coming soon
++    Given the learner has completed "vectors, forces, torque"
++    When the learner opens the course path
++    Then "momentum" is "locked"
++    And "momentum" is shown as coming soon
+diff --git a/backend/features/lesson_scoring.feature b/backend/features/lesson_scoring.feature
+new file mode 100644
+index 0000000..52fa061
+--- /dev/null
++++ b/backend/features/lesson_scoring.feature
+@@ -0,0 +1,36 @@
++Feature: Lesson scoring
++  As a learner
++  I want to earn XP and lose hearts based on my answers
++  So that my progress reflects how well I did
++
++  Scenario: Perfect lesson earns the bonus
++    Given a lesson with 4 questions
++    When the learner answers 4 questions correctly
++    Then the learner earns 50 XP
++    And the run is marked as perfect
++    And the accuracy is 100 percent
++
++  Scenario: Wrong answers cost hearts
++    Given a lesson with 5 questions
++    When the learner answers 3 questions correctly
++    Then the learner earns 30 XP
++    And the learner loses 2 hearts
++    And the run is not marked as perfect
++
++  Scenario Outline: XP for different results
++    Given a lesson with <total> questions
++    When the learner answers <correct> questions correctly
++    Then the learner earns <xp> XP
++    And the accuracy is <accuracy> percent
++
++    Examples:
++      | total | correct | xp | accuracy |
++      | 3     | 0       | 0  | 0        |
++      | 3     | 1       | 10 | 33       |
++      | 3     | 3       | 40 | 100      |
++      | 6     | 5       | 50 | 83       |
++
++  Scenario: Reported score above the question count is capped
++    Given a lesson with 2 questions
++    When the learner answers 9 questions correctly
++    Then the learner earns 30 XP
+diff --git a/backend/features/signup_validation.feature b/backend/features/signup_validation.feature
+new file mode 100644
+index 0000000..d4842e9
+--- /dev/null
++++ b/backend/features/signup_validation.feature
+@@ -0,0 +1,22 @@
++Feature: Sign-up form validation
++  As a new user
++  I want clear messages when my sign-up details are wrong
++  So that I can fix them before creating an account
++
++  Scenario: Valid details are accepted
++    Given a sign-up with name "Ada Lovelace", email "ada@curio.dev" and password "Learner123"
++    When the sign-up form is validated
++    Then there are no errors
++
++  Scenario Outline: Invalid details show a message on the field
++    Given a sign-up with name "<name>", email "<email>" and password "<password>"
++    When the sign-up form is validated
++    Then the "<field>" field shows "<message>"
++
++    Examples:
++      | name | email         | password   | field    | message                                     |
++      | A    | ada@curio.dev | Learner123 | name     | Name must be at least 2 characters          |
++      | Ada  | ada@curio     | Learner123 | email    | Enter a valid email address                 |
++      | Ada  | ada@curio.dev | abc123     | password | Password must be at least 8 characters      |
++      | Ada  | ada@curio.dev | abcdefgh   | password | Password must contain a letter and a number |
++      | Ada  | ada@curio.dev | 12345678   | password | Password must contain a letter and a number |
+diff --git a/backend/features/step_definitions/steps.js b/backend/features/step_definitions/steps.js
+new file mode 100644
+index 0000000..168b8c5
+--- /dev/null
++++ b/backend/features/step_definitions/steps.js
+@@ -0,0 +1,106 @@
++// Step definitions for the Curio BDD scenarios (Cucumber.js).
++// Each step calls the real application code; no database is needed because
++// the functions under test are pure.
++import assert from "node:assert/strict";
++import { Given, Then, When } from "@cucumber/cucumber";
++import { scoreRun } from "../../src/services/scoring.js";
++import { buildPath } from "../../src/services/progress.service.js";
++import { zonesFor } from "../../src/services/league.service.js";
++import { validateSignup } from "../../../frontend/src/lib/validation.js";
++
++const list = (text) => text.split(",").map((item) => item.trim()).filter(Boolean);
++const lessonDoc = (slug, published) => ({
++  _id: { toString: () => `id-${slug}` }, slug, title: slug, xp: 20, difficulty: "beginner", estimatedMinutes: 5, published,
++});
++
++// ---- Lesson scoring ------------------------------------------------------
++Given(/^a lesson with (\d+) questions$/, function (total) {
++  this.total = Number(total);
++});
++
++When(/^the learner answers (\d+) questions correctly$/, function (correct) {
++  this.score = scoreRun({ total: this.total, correctCount: Number(correct) });
++});
++
++Then(/^the learner earns (\d+) XP$/, function (xp) {
++  assert.equal(this.score.xpAwarded, Number(xp));
++});
++
++Then(/^the accuracy is (\d+) percent$/, function (accuracy) {
++  assert.equal(this.score.accuracy, Number(accuracy));
++});
++
++Then(/^the learner loses (\d+) hearts$/, function (hearts) {
++  assert.equal(this.score.wrong, Number(hearts));
++});
++
++Then(/^the run is( not)? marked as perfect$/, function (not) {
++  assert.equal(this.score.perfect, !not);
++});
++
++// ---- Learning path -------------------------------------------------------
++Given(/^a course with the published lessons "([^"]*)"$/, function (slugs) {
++  this.lessons = list(slugs).map((slug) => lessonDoc(slug, true));
++});
++
++Given(/^a draft lesson "([^"]*)"$/, function (slug) {
++  this.lessons.push(lessonDoc(slug, false));
++});
++
++Given(/^the learner has completed no lessons$/, function () {
++  this.completed = new Set();
++});
++
++Given(/^the learner has completed "([^"]*)"$/, function (slugs) {
++  this.completed = new Set(list(slugs).map((slug) => `id-${slug}`));
++});
++
++When(/^the learner opens the course path$/, function () {
++  this.path = buildPath(this.lessons, this.completed);
++});
++
++Then(/^"([^"]*)" is "([^"]*)"$/, function (slug, status) {
++  assert.equal(this.path.find((node) => node.id === slug).status, status);
++});
++
++Then(/^"([^"]*)" is shown as coming soon$/, function (slug) {
++  assert.equal(this.path.find((node) => node.id === slug).draft, true);
++});
++
++// ---- League zones --------------------------------------------------------
++Given(/^a learner in tier (\d+)$/, function (tier) {
++  this.tier = Number(tier);
++});
++
++Given(/^a cohort of (\d+) learners$/, function (size) {
++  this.size = Number(size);
++});
++
++When(/^the week's zones are calculated$/, function () {
++  this.zones = zonesFor(this.tier, this.size);
++});
++
++Then(/^the top (\d+) learners are promoted$/, function (count) {
++  assert.equal(this.zones.promote, Number(count));
++});
++
++Then(/^the bottom (\d+) learners are demoted$/, function (count) {
++  assert.equal(this.zones.demote, Number(count));
++});
++
++// ---- Sign-up validation --------------------------------------------------
++Given(/^a sign-up with name "([^"]*)", email "([^"]*)" and password "([^"]*)"$/, function (name, email, password) {
++  this.form = { name, email, password };
++});
++
++When(/^the sign-up form is validated$/, function () {
++  this.errors = validateSignup(this.form);
++});
++
++Then(/^there are no errors$/, function () {
++  assert.deepEqual(this.errors, {});
++});
++
++Then(/^the "([^"]*)" field shows "([^"]*)"$/, function (field, message) {
++  assert.equal(this.errors[field], message);
++});
+diff --git a/backend/package.json b/backend/package.json
+index 1e14edf..c738cbe 100644
+--- a/backend/package.json
++++ b/backend/package.json
+@@ -12,7 +12,8 @@
+     "seed:reset": "node src/seed/seed.js --reset",
+     "test": "node --test tests/*.test.js",
+     "test:unit": "node --test --experimental-test-module-mocks tests/unit/*.test.js",
+-    "test:coverage": "node --test --experimental-test-module-mocks --experimental-test-coverage --test-coverage-include=src/services/** --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info tests/unit/*.test.js"
++    "test:coverage": "node --test --experimental-test-module-mocks --experimental-test-coverage --test-coverage-include=src/services/** --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info tests/unit/*.test.js",
++    "test:bdd": "cucumber-js"
+   },
+   "dependencies": {
+     "bcryptjs": "^3.0.3",
+@@ -26,6 +27,7 @@
+     "zod": "^4.1.12"
+   },
+   "devDependencies": {
++    "@cucumber/cucumber": "^11.3.0",
+     "mongodb-memory-server": "^10.2.3",
+     "nodemon": "^3.1.14",
+     "supertest": "^7.1.4"
+-- 
+2.43.0
+
+From d6ee7dab1e50918b9500b7f5bce5dcae70ac6107 Mon Sep 17 00:00:00 2001
+From: Curio Member 2 <member2@curio.local>
+Date: Tue, 24 Nov 2026 15:39:00 +0530
+Subject: [PATCH 6/6] docs: add test run and coverage evidence
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_011AYoWv6wE9SScZMABpyZBG
+---
+ backend/tests/unit/progress.service.test.js   |   2 +-
+ .../evidence/backend-unit-coverage.txt        | 118 ++++++++++++++++++
+ .../evidence/frontend-unit-coverage.txt       |  69 ++++++++++
+ 3 files changed, 188 insertions(+), 1 deletion(-)
+ create mode 100644 docs/testing/evidence/backend-unit-coverage.txt
+ create mode 100644 docs/testing/evidence/frontend-unit-coverage.txt
+
+diff --git a/backend/tests/unit/progress.service.test.js b/backend/tests/unit/progress.service.test.js
+index c0aae21..74615e7 100644
+--- a/backend/tests/unit/progress.service.test.js
++++ b/backend/tests/unit/progress.service.test.js
+@@ -11,7 +11,7 @@ const lessonDoc = (slug, { published = true } = {}) => ({
+   _id: oid(`id-${slug}`), slug, title: slug, xp: 20, difficulty: "beginner", estimatedMinutes: 5, published,
+ });
+ 
+-describe("buildPath (CC = 4)", () => {
++describe("buildPath", () => {
+   const lessons = [lessonDoc("a"), lessonDoc("b"), lessonDoc("c"), lessonDoc("draft", { published: false })];
+ 
+   test("new learner: first lesson active, the rest locked, draft flagged", () => {
+diff --git a/docs/testing/evidence/backend-unit-coverage.txt b/docs/testing/evidence/backend-unit-coverage.txt
+new file mode 100644
+index 0000000..5fb4eef
+--- /dev/null
++++ b/docs/testing/evidence/backend-unit-coverage.txt
+@@ -0,0 +1,118 @@
++
++> curio-backend@1.0.0 test:coverage
++> node --test --experimental-test-module-mocks --experimental-test-coverage --test-coverage-include=src/services/** --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info tests/unit/*.test.js
++
++(node:956) ExperimentalWarning: Module mocking is an experimental feature and might change at any time
++(Use `node --trace-warnings ...` to show where the warning was created)
++▶ weekBounds
++  ✔ a Wednesday belongs to the week starting the Monday before (0.950985ms)
++  ✔ a Sunday still belongs to the previous Monday's week (0.173123ms)
++  ✔ Monday 00:00 UTC starts a new week (0.107986ms)
++✔ weekBounds (3.815161ms)
++▶ zonesFor (CC = 3)
++  ✔ path 1: middle tier, full cohort -> promote 7, demote 5 (0.849449ms)
++  ✔ path 2: top tier never promotes (0.131634ms)
++  ✔ path 3: bottom tier never demotes (0.072227ms)
++  ✔ boundary: cohort of 12 (= 7 + 5) skips demotion, 13 does not (0.064101ms)
++✔ zonesFor (CC = 3) (1.247463ms)
++▶ leagueView
++  ✔ clamps an out-of-range tier and shows 0 points when not joined (0.21984ms)
++  ✔ defaults to Bronze when the user has no league yet (0.081901ms)
++  ✔ shows weekly XP when joined this week (0.071349ms)
++✔ leagueView (0.524497ms)
++▶ settleLeague
++  ✔ does nothing when the user never joined a week (0.989653ms)
++  ✔ does nothing while the current week is still running (0.227618ms)
++  ✔ top-7 finisher with XP is promoted (7.060306ms)
++  ✔ bottom-5 finisher in a large cohort is demoted (0.374268ms)
++  ✔ a middle finisher stays in the same tier (0.278551ms)
++  ✔ rank 1 with 0 XP is NOT promoted (weeklyXp > 0 condition) (0.22618ms)
++  ✔ ties are broken by id so ranking is deterministic (0.21002ms)
++  ✔ uses a peer's lastWeek snapshot if that peer already settled (0.157662ms)
++✔ settleLeague (9.789993ms)
++▶ settleLeague: learner missing from the peer list
++  ✔ falls back to last place (0.111901ms)
++✔ settleLeague: learner missing from the peer list (0.162342ms)
++▶ joinLeague
++  ✔ assigns a cohort of 30 based on how many already joined (1.252126ms)
++  ✔ does not reset weekly XP if already joined this week (0.198386ms)
++✔ joinLeague (1.554542ms)
++▶ standingsFor
++  ✔ joined: ranks the cohort, marks the learner and shows an unseen result (0.648959ms)
++  ✔ not joined: empty table, and an already-seen result is hidden (0.136149ms)
++✔ standingsFor (0.880866ms)
++(node:964) ExperimentalWarning: Module mocking is an experimental feature and might change at any time
++(Use `node --trace-warnings ...` to show where the warning was created)
++(node:964) ExperimentalWarning: The MockTimers API is an experimental feature and might change at any time
++▶ buildPath
++  ✔ new learner: first lesson active, the rest locked, draft flagged (4.099315ms)
++  ✔ completed lessons show completed and unlock the next one (0.215166ms)
++  ✔ all published lessons completed: no active node (0.12512ms)
++  ✔ missing summary and questionCount default safely (0.156725ms)
++✔ buildPath (5.875677ms)
++▶ recordCompletion
++  ✔ perfect first run: XP bonus, gems, badges, no hearts lost (2.855572ms)
++  ✔ partial run: hearts lost, refill timer started, no perfect bonus (0.742263ms)
++  ✔ zero correct: no XP, so the learner does not join the league (0.550951ms)
++  ✔ hearts never go below zero (0.323107ms)
++  ✔ correctCount larger than the question count is capped (0.345289ms)
++  ✔ replaying a lesson updates best scores and does not count it twice (0.32841ms)
++  ✔ a slower replay keeps the old best time (0.473865ms)
++  ✔ replay with no earlier best time records the new time (0.47006ms)
++  ✔ replay with a missing time keeps the old best time (1.535504ms)
++  ▶ streak
++    ✔ activity yesterday continues the streak (0.460972ms)
++    ✔ a second lesson on the same day does not add to the streak (0.373192ms)
++    ✔ a gap of several days resets the streak to 1 and keeps the longest (0.238303ms)
++    ✔ first ever activity starts the streak at 1 (0.473873ms)
++    ✖ a skipped calendar day resets the streak (1.502845ms) # DEF-M2-01: updateStreak uses 24 h blocks instead of calendar days
++  ✔ streak (3.403582ms)
++✔ recordCompletion (11.593757ms)
++▶ scoreRun
++  ✔ perfect run earns 10 XP per answer plus a 10 XP bonus (1.355243ms)
++  ✔ partial run: no bonus, accuracy rounded to a whole percent (0.175677ms)
++  ✔ zero correct earns nothing (0.128651ms)
++  ✔ correctCount above the total is capped (0.077635ms)
++  ✔ negative correctCount is treated as 0 (0.073363ms)
++  ✔ a lesson with no questions never produces NaN and is not 'perfect' (0.183583ms)
++✔ scoreRun (4.376494ms)
++ℹ tests 47
++ℹ suites 11
++ℹ pass 46
++ℹ fail 0
++ℹ cancelled 0
++ℹ skipped 0
++ℹ todo 1
++ℹ duration_ms 424.895685
++ℹ start of coverage report
++ℹ ----------------------------------------------------------------------
++ℹ file                  | line % | branch % | funcs % | uncovered lines
++ℹ ----------------------------------------------------------------------
++ℹ src                   |        |          |         | 
++ℹ  services             |        |          |         | 
++ℹ   league.service.js   | 100.00 |   100.00 |  100.00 | 
++ℹ   progress.service.js | 100.00 |   100.00 |  100.00 | 
++ℹ   scoring.js          | 100.00 |   100.00 |  100.00 | 
++ℹ ----------------------------------------------------------------------
++ℹ all files             | 100.00 |   100.00 |  100.00 | 
++ℹ ----------------------------------------------------------------------
++ℹ end of coverage report
++
++✖ failing tests:
++
++test at tests/unit/progress.service.test.js:155:5
++✖ a skipped calendar day resets the streak (1.502845ms) # DEF-M2-01: updateStreak uses 24 h blocks instead of calendar days
++  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
++  
++  4 !== 1
++  
++      at TestContext.<anonymous> (file:///home/claude/hasindu44/curio/backend/tests/unit/progress.service.test.js:159:14)
++      at async Test.run (node:internal/test_runner/test:1054:7)
++      at async Suite.processPendingSubtests (node:internal/test_runner/test:744:7) {
++    generatedMessage: true,
++    code: 'ERR_ASSERTION',
++    actual: 4,
++    expected: 1,
++    operator: 'strictEqual',
++    diff: 'simple'
++  }
+diff --git a/docs/testing/evidence/frontend-unit-coverage.txt b/docs/testing/evidence/frontend-unit-coverage.txt
+new file mode 100644
+index 0000000..f04fd8c
+--- /dev/null
++++ b/docs/testing/evidence/frontend-unit-coverage.txt
+@@ -0,0 +1,69 @@
++
++> curio-frontend@1.0.0 test:coverage
++> node --test --experimental-test-coverage --test-coverage-include=src/lib/** --test-coverage-exclude=src/lib/sound.js --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info tests/unit/*.test.js
++
++▶ timeLeft (CC = 6)
++  ✔ plural days (1.276843ms)
++  ✔ singular day (boundary: exactly 24 h) (0.149097ms)
++  ✔ plural hours (just under a day) (0.143546ms)
++  ✔ singular hour (0.085287ms)
++  ✔ plural minutes (0.069252ms)
++  ✔ under a minute still shows 1 minute (0.067802ms)
++  ✔ a past deadline is clamped to 1 minute, never negative (0.062636ms)
++✔ timeLeft (CC = 6) (2.981457ms)
++▶ weekBounds (frontend copy)
++  ✔ matches the backend: weeks start Monday 00:00 UTC (0.14732ms)
++✔ weekBounds (frontend copy) (0.211702ms)
++▶ validateSignup (CC = 5)
++  ✔ path 1: all fields valid -> no errors (1.445005ms)
++  ✔ path 2: name shorter than 2 characters (after trimming) (0.204056ms)
++  ✔ path 3: invalid email (0.112122ms)
++  ✔ path 4: password shorter than 8 (0.109869ms)
++  ✔ path 5: long password with no number (0.074541ms)
++  ✔ path 5b: long password with no letter (0.066565ms)
++  ✔ BVA: password of exactly 7 / 8 characters (0.148897ms)
++  ✔ several invalid fields are all reported together (0.199692ms)
++✔ validateSignup (CC = 5) (3.505718ms)
++▶ validateLogin
++  ✔ valid credentials (0.116342ms)
++  ✔ empty password and bad email (0.076301ms)
++✔ validateLogin (0.274402ms)
++▶ slugify
++  ✔ lowercases, strips accents and joins words with dashes (1.245585ms)
++  ✔ handles empty / null input (0.136812ms)
++  ✔ is capped at 60 characters (0.130627ms)
++✔ slugify (1.669963ms)
++▶ validateLesson
++  ✔ a valid draft has no errors (0.398471ms)
++  ✔ title shorter than 3 and longer than 80 (0.238466ms)
++  ✔ bad slug, long summary and missing course (0.085077ms)
++  ✔ BVA on XP: 4 and 101 rejected, 5 and 100 accepted, decimals and empty rejected (0.116009ms)
++  ✔ order and minutes out of range (0.069024ms)
++  ✔ publishing without questions is rejected (0.059151ms)
++  ✔ mcq: empty prompt, empty option and correctIndex out of range (0.173335ms)
++  ✔ mcq: missing correctIndex (0.071844ms)
++  ✔ numeric: empty or non-number answer rejected, 0 accepted (0.099249ms)
++  ✔ interactive and lab questions only need a prompt (0.078839ms)
++  ✔ order: fewer than 2 steps rejected, error key uses the question index (0.093569ms)
++  ✔ order: two filled steps are accepted (0.122133ms)
++✔ validateLesson (1.892276ms)
++ℹ tests 33
++ℹ suites 6
++ℹ pass 33
++ℹ fail 0
++ℹ cancelled 0
++ℹ skipped 0
++ℹ todo 0
++ℹ duration_ms 166.454687
++ℹ start of coverage report
++ℹ ----------------------------------------------------------------
++ℹ file            | line % | branch % | funcs % | uncovered lines
++ℹ ----------------------------------------------------------------
++ℹ src             |        |          |         | 
++ℹ  lib            |        |          |         | 
++ℹ   leagues.js    | 100.00 |   100.00 |  100.00 | 
++ℹ   validation.js | 100.00 |   100.00 |  100.00 | 
++ℹ ----------------------------------------------------------------
++ℹ all files       | 100.00 |   100.00 |  100.00 | 
++ℹ ----------------------------------------------------------------
++ℹ end of coverage report
+-- 
+2.43.0
+
