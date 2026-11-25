@@ -49,3 +49,17 @@ jobs:
             frontend/test-results/
             frontend/playwright-report/
           if-no-files-found: ignore
+
+      - name: Create coverage folders
+        run: mkdir -p backend/coverage frontend/coverage
+
+      - name: Generate backend coverage
+        run: npm run test:coverage -w backend
+
+      - name: Generate frontend coverage
+        run: npm run test:coverage -w frontend
+
+      - name: SonarQube Cloud scan
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
